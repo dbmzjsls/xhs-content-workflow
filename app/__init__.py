@@ -1,0 +1,1 @@
+"""Xiaohongshu content workflow application."""
