@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,8 +63,11 @@ def _next_backup_path(database_path: Path) -> Path:
 
 def _create_verified_backup(database_path: Path) -> Path:
     backup_path = _next_backup_path(database_path)
-    shutil.copy2(database_path, backup_path)
-    if not backup_path.is_file() or backup_path.stat().st_size != database_path.stat().st_size:
+    # A filesystem copy omits committed pages that are still in SQLite's WAL.
+    # SQLite's backup API takes a consistent snapshot that includes those pages.
+    with sqlite3.connect(database_path) as source, sqlite3.connect(backup_path) as destination:
+        source.backup(destination)
+    if not backup_path.is_file() or backup_path.stat().st_size == 0:
         raise LegacyDatabaseError("legacy database backup verification failed")
     with sqlite3.connect(backup_path) as connection:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()

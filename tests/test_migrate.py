@@ -20,10 +20,14 @@ def _tables(path: Path) -> set[str]:
         }
 
 
-def _upgrade_to_0001(path: Path) -> None:
+def _upgrade_to_revision(path: Path, revision: str) -> None:
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{path.as_posix()}")
-    command.upgrade(config, "20260703_0001")
+    command.upgrade(config, revision)
+
+
+def _upgrade_to_0001(path: Path) -> None:
+    _upgrade_to_revision(path, "20260703_0001")
 
 
 def _legacy_database(path: Path, *, duplicate_drafts: bool = False) -> None:
@@ -128,6 +132,79 @@ def test_legacy_database_is_backed_up_and_rows_are_preserved(tmp_path: Path):
         )
         assert connection.execute("SELECT title FROM drafts WHERE id = 1").fetchone() == (
             "legacy title",
+        )
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "20260730_0003",
+        )
+
+
+def test_legacy_wal_database_backup_includes_committed_rows(tmp_path: Path):
+    database = tmp_path / "legacy-wal.db"
+    _legacy_database(database)
+
+    with sqlite3.connect(database) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute(
+            """
+            INSERT INTO content_runs (
+                id, status, current_step, topic, audience, product_function,
+                pain_point, created_at, updated_at
+            ) VALUES (2, 'review_required', 'review', 'wal topic', 'audience', 'product',
+                      'pain', '2026-01-01 00:00:00', '2026-01-01 00:00:00')
+            """
+        )
+        writer.execute(
+            """
+            INSERT INTO drafts (run_id, version, title, body, is_final, created_at)
+            VALUES (2, 1, 'wal title', 'wal body', 0, '2026-01-01 00:00:00')
+            """
+        )
+        writer.commit()
+        assert Path(f"{database}-wal").exists()
+
+        migrate_database(f"sqlite:///{database.as_posix()}")
+
+    backups = list(tmp_path.glob("legacy-wal.pre-migration-*.db"))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as connection:
+        assert connection.execute("SELECT topic FROM content_runs WHERE id = 2").fetchone() == (
+            "wal topic",
+        )
+        assert connection.execute("SELECT title FROM drafts WHERE run_id = 2").fetchone() == (
+            "wal title",
+        )
+
+
+def test_versioned_database_upgrades_from_0002_to_head_preserving_rows(tmp_path: Path):
+    database = tmp_path / "versioned.db"
+    _upgrade_to_revision(database, "20260706_0002")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO content_runs (
+                id, status, current_step, topic, audience, product_function,
+                pain_point, created_at, updated_at
+            ) VALUES (1, 'review_required', 'review', 'versioned topic', 'audience', 'product',
+                      'pain', '2026-01-01 00:00:00', '2026-01-01 00:00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO drafts (run_id, version, title, body, is_final, created_at)
+            VALUES (1, 1, 'versioned title', 'versioned body', 0, '2026-01-01 00:00:00')
+            """
+        )
+        connection.commit()
+
+    migrate_database(f"sqlite:///{database.as_posix()}")
+
+    assert not list(tmp_path.glob("versioned.pre-migration-*.db"))
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT topic FROM content_runs WHERE id = 1").fetchone() == (
+            "versioned topic",
+        )
+        assert connection.execute("SELECT title FROM drafts WHERE id = 1").fetchone() == (
+            "versioned title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "20260730_0003",
