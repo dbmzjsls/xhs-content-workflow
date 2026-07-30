@@ -65,7 +65,6 @@ def upgrade() -> None:
         sa.Column("quality_report", sa.JSON(), nullable=True),
         sa.Column("is_final", sa.Boolean(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("run_id", "version", name="uq_drafts_run_id_version"),
     )
     op.create_index("ix_drafts_is_final", "drafts", ["is_final"])
     op.create_index("ix_drafts_run_id", "drafts", ["run_id"])

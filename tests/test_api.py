@@ -4,8 +4,9 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from app.config import get_settings
-from app.db import get_engine, init_db, reset_engine_for_tests
+from app.db import get_engine, reset_engine_for_tests
 from app.main import app
+from app.migrate import migrate_database
 from app.repositories import runs as repo
 
 
@@ -24,8 +25,20 @@ def _prepare_test_app(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     reset_engine_for_tests(f"sqlite:///{db_path}")
     get_settings.cache_clear()
-    init_db()
+    migrate_database(f"sqlite:///{db_path}")
     return export_dir
+
+
+def test_app_startup_does_not_create_unmigrated_schema(tmp_path, monkeypatch):
+    database = tmp_path / "unmigrated.db"
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    reset_engine_for_tests(f"sqlite:///{database}")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        assert client.get("/healthz").json() == {"ok": True}
+
+    assert not database.exists()
 
 
 def test_create_review_and_export(tmp_path, monkeypatch):

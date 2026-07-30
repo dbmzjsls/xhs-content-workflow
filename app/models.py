@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Column, Text, UniqueConstraint
+from sqlalchemy import JSON, Column, Float, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.time_utils import utc_now
@@ -22,6 +22,11 @@ class ContentRun(SQLModel, table=True):
     brief: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     final_package: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     error: str | None = Field(default=None, sa_column=Column(Text))
+    workflow_name: str | None = Field(default=None, index=True)
+    workflow_version: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    heartbeat_at: datetime | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -35,6 +40,11 @@ class RunStep(SQLModel, table=True):
     status: str = Field(default="completed", index=True)
     input_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     output_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    attempt: int = Field(default=1, index=True)
+    started_at: datetime | None = Field(default=None, index=True)
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -52,6 +62,13 @@ class Draft(SQLModel, table=True):
     narrative_plan: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     quality_report: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     is_final: bool = Field(default=False, index=True)
+    round: int = Field(default=1)
+    candidate: int = Field(default=1)
+    parent_draft_id: int | None = Field(default=None, foreign_key="drafts.id", index=True)
+    angle: str | None = None
+    source: str | None = None
+    score: float | None = Field(default=None, sa_column=Column(Float))
+    selected: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -91,3 +108,38 @@ class ReviewAction(SQLModel, table=True):
     instructions: str | None = Field(default=None, sa_column=Column(Text))
     replacement: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class UploadAsset(SQLModel, table=True):
+    __tablename__ = "upload_assets"
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: int = Field(index=True, foreign_key="content_runs.id")
+    draft_id: int | None = Field(default=None, index=True, foreign_key="drafts.id")
+    kind: str
+    status: str = Field(index=True)
+    file_path: str
+    mime_type: str | None = None
+    checksum: str | None = None
+    size_bytes: int | None = None
+    provider: str | None = None
+    remote_id: str | None = None
+    metadata_payload: dict[str, Any] | None = Field(default=None, sa_column=Column("metadata", JSON))
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class IdempotencyRecord(SQLModel, table=True):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("key", name="uq_idempotency_records_key"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    key: str
+    scope: str = Field(index=True)
+    run_id: int | None = Field(default=None, index=True, foreign_key="content_runs.id")
+    request_hash: str | None = None
+    response_payload: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    status: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime | None = None

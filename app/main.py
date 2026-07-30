@@ -6,7 +6,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import runs
 from app.config import get_settings
-from app.db import init_db
 
 settings = get_settings()
 settings.export_dir.mkdir(parents=True, exist_ok=True)
@@ -14,7 +13,6 @@ settings.export_dir.mkdir(parents=True, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
     settings.export_dir.mkdir(parents=True, exist_ok=True)
     yield
 

@@ -2,7 +2,7 @@ from collections.abc import Generator
 from threading import Lock
 
 from sqlalchemy.engine import Engine
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from app.config import get_settings
 
@@ -22,12 +22,6 @@ def get_engine() -> Engine:
             if _engine is None:
                 _engine = _create_engine(get_settings().database_url)
     return _engine
-
-
-def init_db() -> None:
-    from app import models  # noqa: F401
-
-    SQLModel.metadata.create_all(get_engine())
 
 
 def get_session() -> Generator[Session, None, None]:
