@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import ContentRun
@@ -39,6 +40,20 @@ def test_example_selection_is_limited_and_deterministic():
     assert all(item["type"] == "negative" for item in first["negative"])
 
 
+def test_example_selection_orders_by_tag_relevance_then_id():
+    selected = content_pipeline.select_examples(_brief())
+
+    assert [item["id"] for item in selected["positive"]] == [
+        "writing-night-desk-positive",
+        "writing-before-after-positive",
+        "writing-discovery-positive",
+    ]
+    assert [item["id"] for item in selected["negative"]] == [
+        "hard-sell-negative",
+        "generic-negative",
+    ]
+
+
 def test_generate_round_has_exactly_three_distinct_angles_and_metadata():
     result = content_pipeline.generate_candidate_round(_brief(), provider=content_pipeline.MockPipelineProvider())
 
@@ -67,6 +82,39 @@ def test_ranking_excludes_hard_rule_failures_and_uses_candidate_number_for_ties(
     assert ranked[-1]["candidate"] == 2
     assert not ranked[-1]["recommendable"]
     assert ranked[0]["recommended"]
+
+
+def test_soft_score_has_five_bounded_dimensions_and_a_100_point_total():
+    report = content_pipeline.soft_score(_valid_draft(1))
+
+    assert set(report["dimensions"]) == {
+        "specificity",
+        "emotional_value",
+        "narrative_coherence",
+        "natural_product_integration",
+        "usefulness_conversational_tone",
+    }
+    assert all(0 <= score <= 20 for score in report["dimensions"].values())
+    assert report["total"] == sum(report["dimensions"].values())
+    assert 0 <= report["total"] <= 100
+
+
+def test_malformed_provider_draft_is_rejected_without_mock_fallback():
+    class MalformedProvider:
+        name = "malformed"
+        model = "test"
+
+        def generate_candidate(self, brief, angle, examples):
+            return {"title": "missing fields"}
+
+        def repair_candidate(self, draft, brief, angle, issues):
+            return draft
+
+        def revise_draft(self, draft, brief, instructions, hard_rules):
+            return draft
+
+    with pytest.raises(RuntimeError, match="provider draft"):
+        content_pipeline.generate_candidate_round(_brief(), provider=MalformedProvider())
 
 
 def test_one_repair_is_attempted_but_a_second_failure_is_not_repaired():
@@ -124,3 +172,33 @@ def test_persisted_candidates_and_provider_revision_keep_real_parent_child_link(
     assert child_round == parent_round + 1
     assert child_body != parent_body
     assert "revision note" not in child_body.lower()
+
+
+def test_mock_revision_changes_with_the_supplied_instructions():
+    provider = content_pipeline.MockPipelineProvider()
+    draft = _valid_draft(1)
+    practical = provider.revise_draft(draft, _brief(), "Make the ending more practical.", {})
+    shorter = provider.revise_draft(draft, _brief(), "Make it shorter.", {})
+
+    assert practical["body"] != draft["body"]
+    assert practical["body"] != shorter["body"]
+    assert "practical" in practical["body"].lower()
+    assert "shorter" in shorter["body"].lower()
+
+
+def test_policy_requires_non_empty_string_collections(monkeypatch):
+    monkeypatch.setattr(
+        content_pipeline,
+        "_read_yaml",
+        lambda name: {
+            "version": "x",
+            "brand_name": "Cathoven猫多芬雅思",
+            "required_tags": [],
+            "hard_sell_terms": ["buy now"],
+            "scene_markers": ["地铁"],
+            "discovery_markers": ["后来"],
+        },
+    )
+
+    with pytest.raises(ValueError, match="required_tags"):
+        content_pipeline.load_policy()

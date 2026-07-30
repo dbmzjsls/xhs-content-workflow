@@ -102,6 +102,10 @@ def add_draft(
     score: float | None = None,
     selected: bool = False,
 ) -> Draft:
+    if selected:
+        for existing in session.exec(select(Draft).where(Draft.run_id == run_id, Draft.selected)).all():
+            existing.selected = False
+            session.add(existing)
     next_version = (
         session.exec(
             select(func.coalesce(func.max(Draft.version), 0) + 1)
@@ -134,18 +138,44 @@ def add_draft(
     return draft
 
 
-def mark_latest_draft_final(session: Session, run_id: int) -> Draft | None:
+def get_selected_or_recommended_draft(session: Session, run_id: int) -> Draft | None:
     drafts = session.exec(
-        select(Draft).where(Draft.run_id == run_id).order_by(Draft.version.desc())
+        select(Draft).where(Draft.run_id == run_id).order_by(Draft.version)
     ).all()
     if not drafts:
         return None
+    selected = [draft for draft in drafts if draft.selected]
+    if selected:
+        return max(selected, key=lambda draft: draft.version)
+    candidates = [
+        draft
+        for draft in drafts
+        if draft.parent_draft_id is None and draft.quality_report.get("hard", {}).get("passed")
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda draft: (-(draft.score if draft.score is not None else -1), draft.candidate, draft.version),
+    )
+
+
+def mark_selected_or_recommended_draft_final(session: Session, run_id: int) -> Draft | None:
+    selected_draft = get_selected_or_recommended_draft(session, run_id)
+    if selected_draft is None:
+        return None
+    drafts = session.exec(select(Draft).where(Draft.run_id == run_id)).all()
     for draft in drafts:
-        draft.is_final = draft.id == drafts[0].id
+        draft.is_final = draft.id == selected_draft.id
         session.add(draft)
     session.commit()
-    session.refresh(drafts[0])
-    return drafts[0]
+    session.refresh(selected_draft)
+    return selected_draft
+
+
+def mark_latest_draft_final(session: Session, run_id: int) -> Draft | None:
+    """Compatibility alias retained for callers before candidate selection existed."""
+    return mark_selected_or_recommended_draft_final(session, run_id)
 
 
 def add_image_asset(

@@ -65,6 +65,12 @@ def load_policy() -> dict[str, Any]:
     policy = _read_yaml("policy.yaml")
     if not isinstance(policy.get("version"), str) or not policy["version"]:
         raise ValueError("content policy requires a non-empty version")
+    if not isinstance(policy.get("brand_name"), str) or not policy["brand_name"]:
+        raise ValueError("content policy requires a non-empty brand_name")
+    for field in ("required_tags", "hard_sell_terms", "scene_markers", "discovery_markers"):
+        value = policy.get(field)
+        if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"content policy {field} must be a non-empty list of strings")
     return policy
 
 
@@ -173,18 +179,23 @@ class MockPipelineProvider:
 
     def revise_draft(self, draft, brief, instructions, hard_rules):
         """A deterministic rewrite, not a revision note appended to the old body."""
-        sentence = "I ended by choosing one sentence to improve before opening another tab."
+        focus = _instruction_focus(instructions)
         original = str(draft.get("body") or "").strip()
-        rewritten = re.sub(r"\s*I ended by choosing one sentence to improve before opening another tab\.\s*", " ", original)
-        max_original = 400 - len(sentence) - 1
-        if len(rewritten) > max_original:
-            rewritten = rewritten[:max_original].rstrip()
+        rewritten = re.sub(r"\s*[—-]\s*so I focused on .*?[.。]\s*$", "", original)
+        sentence = f"— so I focused on {focus}."
+        max_original = 400 - len(sentence)
+        rewritten = rewritten[:max_original].rstrip(" 。.")
         return {
             "title": str(draft.get("title") or "Draft"),
-        "body": f"{rewritten} {sentence}".strip(),
+            "body": f"{rewritten} {sentence}".strip(),
             "tags": list(draft.get("tags") or []),
             "first_comment": draft.get("first_comment") or "What would you revise first?",
         }
+
+
+def _instruction_focus(instructions: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", instructions.casefold())
+    return " ".join(tokens[:8]) or "one concrete next step"
 
 
 class OpenAICompatiblePipelineProvider:

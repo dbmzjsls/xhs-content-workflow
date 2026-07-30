@@ -14,7 +14,7 @@ def export_package(session: Session, run_id: int) -> dict:
     run = repo.get_run(session, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    draft = repo.mark_latest_draft_final(session, run_id)
+    draft = repo.mark_selected_or_recommended_draft_final(session, run_id)
     if draft is None:
         raise ValueError("no draft to export")
     images = repo.list_images(session, run_id)

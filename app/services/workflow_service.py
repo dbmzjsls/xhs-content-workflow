@@ -55,6 +55,7 @@ def review_run(session: Session, run_id: int, payload: ReviewRequest):
             first_comment=replacement.get("first_comment"),
             narrative_plan={"source": "human replacement"},
             quality_report=content_rules.xhs_quality_check(replacement),
+            selected=True,
         )
         repo.update_run(session, run_id, status="review_required", current_step="human_review")
         return {"draft_id": draft.id, "status": "review_required"}

@@ -27,6 +27,13 @@
 - `ruff check .` — passed.
 - `git diff --check` — passed.
 
+### Final rerun after selection-uniqueness review
+
+- `pytest tests/test_content_pipeline.py tests/test_candidate_workflow.py tests/test_api.py tests/test_llm_provider.py -q -p no:cacheprovider --basetemp .test-tmp-task2-final-focused` — `19 passed`.
+- `pytest -q -p no:cacheprovider --basetemp .test-tmp-task2-final-full` — `34 passed`.
+- `ruff check .` — `All checks passed!`.
+- `git diff --check` — passed.
+
 ## Files
 
 - `content_library/policy.yaml`
@@ -44,3 +51,23 @@
 - Pytest emits a benign warning because the workspace's pre-existing
   `.pytest_cache` directory is not writable. A workspace-local `--basetemp`
   was used so temporary database tests remain isolated.
+
+## Review remediation (2026-07-30)
+
+- Integrated `generate_candidate_round()` and `persist_candidate_round()` into
+  the normal synchronous workflow. The selected candidate is now the draft
+  used by image prompt generation and human review.
+- Added selected-or-recommended draft lookup for finalization/export. It never
+  falls back to the newest draft merely because it has the highest version.
+- Made mock revisions instruction-dependent via a deterministic focus extracted
+  from the supplied instructions; real-provider revision payloads remain
+  instruction-driven.
+- Added validation for every required policy collection and the `地铁` scene
+  marker.
+
+### Exact review-remediation test evidence
+
+- `pytest tests/test_content_pipeline.py tests/test_candidate_workflow.py tests/test_llm_provider.py -q --basetemp .test-tmp-task2-focused` — `14 passed`.
+- `pytest -q -p no:cacheprovider --basetemp .test-tmp-task2-full` — `34 passed`.
+- `ruff check .` — `All checks passed!`.
+- `git diff --check` — passed.

@@ -6,6 +6,7 @@ class WorkflowState(TypedDict, total=False):
     brief: dict[str, Any]
     style_route: dict[str, Any]
     narrative_plan: dict[str, Any]
+    candidate_round: dict[str, Any]
     draft: dict[str, Any]
     humanize_report: dict[str, Any]
     quality_report: dict[str, Any]

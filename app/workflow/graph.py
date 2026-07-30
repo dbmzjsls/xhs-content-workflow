@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlmodel import Session
 
 from app.repositories import runs as repo
-from app.services import content_rules, image_rules, llm_provider
+from app.services import content_pipeline, content_rules, image_rules
 from app.workflow.state import WorkflowState
 
 
@@ -40,51 +40,12 @@ def _narrative_plan(session: Session, state: WorkflowState) -> WorkflowState:
 
 
 def _draft_generate(session: Session, state: WorkflowState) -> WorkflowState:
-    out = llm_provider.generate_draft(state["brief"], state["narrative_plan"])
-    repo.record_step(session, state["run_id"], "draft_generate", state["narrative_plan"], out)
-    return {"draft": out}
-
-
-def _humanize_check(session: Session, state: WorkflowState) -> WorkflowState:
-    out = content_rules.humanize_check(state["draft"])
-    repo.record_step(session, state["run_id"], "humanize_check", state["draft"], out)
-    return {"humanize_report": out}
-
-
-def _xhs_quality_check(session: Session, state: WorkflowState) -> WorkflowState:
-    out = content_rules.xhs_quality_check(state["draft"])
-    repo.record_step(session, state["run_id"], "xhs_quality_check", state["draft"], out)
-    return {"quality_report": out}
-
-
-def _revision(session: Session, state: WorkflowState) -> WorkflowState:
-    out = content_rules.revise_draft(
-        state["draft"],
-        state["quality_report"],
-        state["humanize_report"],
-    )
-    repo.record_step(
-        session,
-        state["run_id"],
-        "revision",
-        {
-            "draft": state["draft"],
-            "quality_report": state["quality_report"],
-            "humanize_report": state["humanize_report"],
-        },
-        out,
-    )
-    repo.add_draft(
-        session,
-        state["run_id"],
-        title=out["title"],
-        body=out["body"],
-        tags=out["tags"],
-        first_comment=out.get("first_comment"),
-        narrative_plan=state["narrative_plan"],
-        quality_report=out["quality_report"],
-    )
-    return {"revised_draft": out}
+    result = content_pipeline.generate_candidate_round(state["brief"])
+    content_pipeline.persist_candidate_round(session, state["run_id"], result)
+    selected = next((item for item in result["candidates"] if item["recommended"]), None)
+    if selected is None:
+        raise ValueError("candidate round produced no hard-rule-passing draft")
+    return {"candidate_round": result, "draft": selected, "revised_draft": selected}
 
 
 def _image_task_classify(session: Session, state: WorkflowState) -> WorkflowState:
@@ -164,9 +125,6 @@ WORKFLOW_STEPS = (
     _style_route,
     _narrative_plan,
     _draft_generate,
-    _humanize_check,
-    _xhs_quality_check,
-    _revision,
     _image_task_classify,
     _reference_select,
     _prompt_rewrite,
