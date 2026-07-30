@@ -28,6 +28,8 @@ def update_run(
     brief: dict[str, Any] | None = None,
     final_package: dict[str, Any] | None = None,
     error: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> ContentRun:
     run = session.get(ContentRun, run_id)
     if run is None:
@@ -42,6 +44,10 @@ def update_run(
         run.final_package = final_package
     if error is not None:
         run.error = error
+    if provider is not None:
+        run.provider = provider
+    if model is not None:
+        run.model = model
     run.updated_at = utc_now()
     session.add(run)
     session.commit()
@@ -88,6 +94,13 @@ def add_draft(
     narrative_plan: dict[str, Any],
     quality_report: dict[str, Any],
     is_final: bool = False,
+    round: int = 1,
+    candidate: int = 1,
+    parent_draft_id: int | None = None,
+    angle: str | None = None,
+    source: str | None = None,
+    score: float | None = None,
+    selected: bool = False,
 ) -> Draft:
     next_version = (
         session.exec(
@@ -107,6 +120,13 @@ def add_draft(
         narrative_plan=narrative_plan,
         quality_report=quality_report,
         is_final=is_final,
+        round=round,
+        candidate=candidate,
+        parent_draft_id=parent_draft_id,
+        angle=angle,
+        source=source,
+        score=score,
+        selected=selected,
     )
     session.add(draft)
     session.commit()

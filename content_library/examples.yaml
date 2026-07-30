@@ -1,0 +1,55 @@
+examples:
+  - id: "writing-night-desk-positive"
+    type: positive
+    audience_tags: ["ielts", "self-study"]
+    function_tags: ["writing", "writing checker"]
+    style_tags: ["memoir", "narrative"]
+    title: "My essay was not the real problem"
+    body: "At 11pm at my desk, I stopped adding vocabulary and found the missing link in my example."
+    tags: ["#ielts", "#writing"]
+    rationale: "Specific scene, a small discovery, and practical reflection."
+  - id: "writing-before-after-positive"
+    type: positive
+    audience_tags: ["ielts", "learner"]
+    function_tags: ["writing"]
+    style_tags: ["contrast", "memoir"]
+    title: "Before and after one paragraph"
+    body: "Before I chased advanced words; after I checked whether the example proved my point."
+    tags: ["#ielts"]
+    rationale: "A concrete before/after contrast without a sales claim."
+  - id: "writing-discovery-positive"
+    type: positive
+    audience_tags: ["ielts", "self-study"]
+    function_tags: ["writing checker", "feedback"]
+    style_tags: ["discovery", "narrative"]
+    title: "The feedback I finally understood"
+    body: "Later I realized that feedback was useful only after I could name the sentence-level problem."
+    tags: ["#study"]
+    rationale: "Lets the product remain a supporting part of the story."
+  - id: "speaking-commute-positive"
+    type: positive
+    audience_tags: ["ielts"]
+    function_tags: ["speaking"]
+    style_tags: ["narrative"]
+    title: "A subway speaking rehearsal"
+    body: "On the subway, I noticed that my pause came before every example."
+    tags: ["#speaking"]
+    rationale: "Useful specific-scene example for another function."
+  - id: "hard-sell-negative"
+    type: negative
+    audience_tags: ["ielts"]
+    function_tags: ["writing"]
+    style_tags: ["sales"]
+    title: "Guaranteed score boost"
+    body: "Buy now for a guaranteed score improvement."
+    tags: ["#ad"]
+    rationale: "Hard-sell promise with no real scene or reflection."
+  - id: "generic-negative"
+    type: negative
+    audience_tags: ["learner"]
+    function_tags: ["feedback"]
+    style_tags: ["generic"]
+    title: "Study better today"
+    body: "This tool is great and everyone should use it."
+    tags: ["#study"]
+    rationale: "Generic claim that lacks a scene, evidence, or voice."
