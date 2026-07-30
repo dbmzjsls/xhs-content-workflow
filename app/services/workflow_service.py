@@ -57,8 +57,10 @@ def review_run(session: Session, run_id: int, payload: ReviewRequest):
             quality_report=content_rules.xhs_quality_check(replacement),
             selected=True,
         )
-        repo.update_run(session, run_id, status="review_required", current_step="human_review")
-        return {"draft_id": draft.id, "status": "review_required"}
+        repo.update_run(
+            session, run_id, status="copy_review_required", current_step="copy_review"
+        )
+        return {"draft_id": draft.id, "status": "copy_review_required"}
     parent = repo.get_selected_or_recommended_draft(session, run_id)
     if parent is None:
         raise ValueError("no draft to revise")
@@ -68,5 +70,5 @@ def review_run(session: Session, run_id: int, payload: ReviewRequest):
         run.brief,
         payload.instructions or "Improve clarity while preserving the original meaning.",
     )
-    repo.update_run(session, run_id, status="review_required", current_step="human_review")
-    return {"draft_id": child.id, "status": "review_required"}
+    repo.update_run(session, run_id, status="copy_review_required", current_step="copy_review")
+    return {"draft_id": child.id, "status": "copy_review_required"}

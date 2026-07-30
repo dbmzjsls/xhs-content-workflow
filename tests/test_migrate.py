@@ -68,7 +68,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path):
     assert {"alembic_version", "content_runs", "upload_assets", "idempotency_records"} <= tables
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0003",
+            "20260730_0004",
         )
         assert {
             "workflow_name",
@@ -134,7 +134,7 @@ def test_legacy_database_is_backed_up_and_rows_are_preserved(tmp_path: Path):
             "legacy title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0003",
+            "20260730_0004",
         )
 
 
@@ -203,11 +203,14 @@ def test_versioned_database_upgrades_from_0002_to_head_preserving_rows(tmp_path:
         assert connection.execute("SELECT topic FROM content_runs WHERE id = 1").fetchone() == (
             "versioned topic",
         )
+        assert connection.execute("SELECT status FROM content_runs WHERE id = 1").fetchone() == (
+            "copy_review_required",
+        )
         assert connection.execute("SELECT title FROM drafts WHERE id = 1").fetchone() == (
             "versioned title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0003",
+            "20260730_0004",
         )
 
 

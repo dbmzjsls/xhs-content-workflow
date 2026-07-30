@@ -116,7 +116,9 @@ def _human_review(session: Session, state: WorkflowState) -> WorkflowState:
         "message": "等待人工审核：通过、返修或替换最终稿。",
     }
     repo.record_step(session, state["run_id"], "human_review", state["revised_draft"], out)
-    repo.update_run(session, state["run_id"], status="review_required", current_step="human_review")
+    repo.update_run(
+        session, state["run_id"], status="copy_review_required", current_step="copy_review"
+    )
     return {"awaiting_review": True}
 
 

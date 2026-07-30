@@ -11,7 +11,7 @@ class ContentRun(SQLModel, table=True):
     __tablename__ = "content_runs"
 
     id: int | None = Field(default=None, primary_key=True)
-    status: str = Field(default="running", index=True)
+    status: str = Field(default="queued", index=True)
     current_step: str = Field(default="created", index=True)
     topic: str
     audience: str
@@ -27,6 +27,7 @@ class ContentRun(SQLModel, table=True):
     provider: str | None = None
     model: str | None = None
     heartbeat_at: datetime | None = Field(default=None, index=True)
+    failed_phase: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now, index=True)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -114,7 +115,7 @@ class UploadAsset(SQLModel, table=True):
     __tablename__ = "upload_assets"
 
     id: int | None = Field(default=None, primary_key=True)
-    run_id: int = Field(index=True, foreign_key="content_runs.id")
+    run_id: int | None = Field(default=None, index=True, foreign_key="content_runs.id")
     draft_id: int | None = Field(default=None, index=True, foreign_key="drafts.id")
     kind: str
     status: str = Field(index=True)

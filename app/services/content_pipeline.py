@@ -305,9 +305,12 @@ def _draft_fields(draft: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_pipeline_provider() -> PipelineProvider:
-    if get_settings().llm_provider.casefold() in {"openai", "openai-compatible"}:
+    configured = get_settings().llm_provider.casefold()
+    if configured in {"openai", "openai-compatible"}:
         return OpenAICompatiblePipelineProvider()
-    return MockPipelineProvider()
+    if configured == "mock":
+        return MockPipelineProvider()
+    raise RuntimeError(f"unsupported LLM provider: {configured}")
 
 
 def hard_rule_check(draft: dict[str, Any], policy: dict[str, Any] | None = None) -> dict[str, Any]:

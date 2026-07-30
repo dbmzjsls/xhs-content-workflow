@@ -1,9 +1,19 @@
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from app.models import ContentRun, Draft, ImageAsset, ReferenceAsset, ReviewAction, RunStep
+from app.models import (
+    ContentRun,
+    Draft,
+    IdempotencyRecord,
+    ImageAsset,
+    ReferenceAsset,
+    ReviewAction,
+    RunStep,
+    UploadAsset,
+)
 from app.time_utils import utc_now
 
 
@@ -30,6 +40,10 @@ def update_run(
     error: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    heartbeat_at: datetime | None = None,
+    failed_phase: str | None = None,
+    clear_error: bool = False,
+    clear_failed_phase: bool = False,
 ) -> ContentRun:
     run = session.get(ContentRun, run_id)
     if run is None:
@@ -48,6 +62,14 @@ def update_run(
         run.provider = provider
     if model is not None:
         run.model = model
+    if heartbeat_at is not None:
+        run.heartbeat_at = heartbeat_at
+    if failed_phase is not None:
+        run.failed_phase = failed_phase
+    if clear_error:
+        run.error = None
+    if clear_failed_phase:
+        run.failed_phase = None
     run.updated_at = utc_now()
     session.add(run)
     session.commit()
@@ -63,18 +85,43 @@ def record_step(
     output_payload: dict[str, Any],
     *,
     status: str = "completed",
+    attempt: int | None = None,
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    duration_ms: int | None = None,
+    error: str | None = None,
 ) -> RunStep:
     run = session.get(ContentRun, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
+    now = utc_now()
+    actual_started = started_at or now
+    actual_completed = completed_at or (now if status in {"completed", "failed"} else None)
+    if attempt is None:
+        attempt = (
+            session.exec(
+                select(func.coalesce(func.max(RunStep.attempt), 0) + 1).where(
+                    RunStep.run_id == run_id, RunStep.name == name
+                )
+            ).one()
+            or 1
+        )
+    if duration_ms is None and actual_completed is not None:
+        duration_ms = max(0, int((actual_completed - actual_started).total_seconds() * 1000))
     step = RunStep(
         run_id=run_id,
         name=name,
         status=status,
         input_payload=input_payload,
         output_payload=output_payload,
+        attempt=attempt,
+        started_at=actual_started,
+        completed_at=actual_completed,
+        duration_ms=duration_ms,
+        error=error,
     )
     run.current_step = name
+    run.heartbeat_at = now
     run.updated_at = utc_now()
     session.add(step)
     session.add(run)
@@ -243,7 +290,7 @@ def add_review_action(
 
 
 def list_steps(session: Session, run_id: int) -> list[RunStep]:
-    return session.exec(select(RunStep).where(RunStep.run_id == run_id)).all()
+    return session.exec(select(RunStep).where(RunStep.run_id == run_id).order_by(RunStep.id)).all()
 
 
 def list_drafts(session: Session, run_id: int) -> list[Draft]:
@@ -256,3 +303,42 @@ def list_images(session: Session, run_id: int) -> list[ImageAsset]:
 
 def list_references(session: Session, run_id: int) -> list[ReferenceAsset]:
     return session.exec(select(ReferenceAsset).where(ReferenceAsset.run_id == run_id)).all()
+
+
+def list_runs(
+    session: Session, *, status: str | None, limit: int, offset: int
+) -> tuple[list[ContentRun], int]:
+    where = ContentRun.status == status if status else None
+    statement = select(ContentRun)
+    count_statement = select(func.count(ContentRun.id))
+    if where is not None:
+        statement = statement.where(where)
+        count_statement = count_statement.where(where)
+    rows = session.exec(
+        statement.order_by(ContentRun.created_at.desc(), ContentRun.id.desc()).offset(offset).limit(limit)
+    ).all()
+    return list(rows), int(session.exec(count_statement).one())
+
+
+def get_image(session: Session, run_id: int, asset_id: int) -> ImageAsset | None:
+    return session.exec(
+        select(ImageAsset).where(ImageAsset.id == asset_id, ImageAsset.run_id == run_id)
+    ).first()
+
+
+def get_upload(session: Session, upload_id: int) -> UploadAsset | None:
+    return session.get(UploadAsset, upload_id)
+
+
+def get_run_upload(session: Session, run_id: int, upload_id: int) -> UploadAsset | None:
+    return session.exec(
+        select(UploadAsset).where(UploadAsset.id == upload_id, UploadAsset.run_id == run_id)
+    ).first()
+
+
+def list_uploads(session: Session, run_id: int) -> list[UploadAsset]:
+    return list(session.exec(select(UploadAsset).where(UploadAsset.run_id == run_id)).all())
+
+
+def get_idempotency(session: Session, key: str) -> IdempotencyRecord | None:
+    return session.exec(select(IdempotencyRecord).where(IdempotencyRecord.key == key)).first()
