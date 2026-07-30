@@ -191,6 +191,8 @@ def test_mock_revision_changes_with_the_supplied_instructions():
     assert all(instruction.casefold() not in revised["body"].casefold() for instruction, revised in zip(instructions, revisions))
     assert all(content_pipeline.hard_rule_check(revised)["passed"] for revised in revisions)
     assert len(revisions[3]["body"]) < len(draft["body"])
+    readable = provider.revise_draft(draft, _brief(), "Make it more readable.", {})
+    assert "tool in the background" not in readable["body"]
 
 
 def test_policy_requires_non_empty_string_collections(monkeypatch):

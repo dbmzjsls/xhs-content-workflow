@@ -27,6 +27,23 @@
 - `ruff check .` — passed.
 - `git diff --check` — passed.
 
+## Final review-parent selection remediation
+
+- `review_run(..., action="revise")` now resolves its parent with
+  `get_selected_or_recommended_draft()`, so an unrelated newer draft cannot
+  displace the selected candidate.
+- Added an end-to-end normal-round → revise → approve/export regression test
+  that verifies the exported child points to the original selected parent.
+- Narrowed mock product-intent detection to explicit phrases; ordinary words
+  such as `readable` no longer trigger the advertising rewrite path.
+
+### Exact parent-selection test evidence
+
+- `pytest tests/test_content_pipeline.py tests/test_candidate_workflow.py tests/test_api.py -q -p no:cacheprovider --basetemp .test-tmp-task2-parent-green` — `21 passed`.
+- `pytest -q -p no:cacheprovider --basetemp .test-tmp-task2-parent-full` — `37 passed`.
+- `ruff check .` — `All checks passed!`.
+- `git diff --check` — passed.
+
 ## Final revision-selection remediation
 
 - A persisted provider revision now becomes the run's only selected draft in

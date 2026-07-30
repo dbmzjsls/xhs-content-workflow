@@ -216,7 +216,10 @@ def _mock_revision_body(instructions: str) -> str:
         f"晚上在书桌前，我又读了一遍那段作文。后来，{content_rules.BRAND_FULL} "
         "让我发现例子没有回应观点。"
     )
-    if any(token in lower for token in ("product", "sales", "ad", "weaken")) or any(
+    if any(
+        phrase in lower
+        for phrase in ("product feel", "less product", "hard sell", "advertising", "weaken product")
+    ) or any(
         token in instructions for token in ("弱化", "产品感", "广告感")
     ):
         return f"{prefix} I kept the tool in the background and rewrote the example myself."

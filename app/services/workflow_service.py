@@ -59,13 +59,12 @@ def review_run(session: Session, run_id: int, payload: ReviewRequest):
         )
         repo.update_run(session, run_id, status="review_required", current_step="human_review")
         return {"draft_id": draft.id, "status": "review_required"}
-    drafts = repo.list_drafts(session, run_id)
-    if not drafts:
+    parent = repo.get_selected_or_recommended_draft(session, run_id)
+    if parent is None:
         raise ValueError("no draft to revise")
-    latest = drafts[-1]
     child = content_pipeline.create_revision(
         session,
-        latest,
+        parent,
         run.brief,
         payload.instructions or "Improve clarity while preserving the original meaning.",
     )

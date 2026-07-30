@@ -7,7 +7,8 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.config import get_settings
 from app.models import ContentRun
 from app.repositories import runs as repo
-from app.services import content_pipeline, export_service
+from app.schemas import ReviewRequest
+from app.services import content_pipeline, export_service, workflow_service
 from app.workflow.graph import run_workflow
 
 
@@ -139,5 +140,47 @@ def test_revision_becomes_selected_and_is_the_draft_exported(monkeypatch, tmp_pa
 
     payload = json.loads((tmp_path / "exports" / str(run.id) / "package.json").read_text("utf-8"))
     assert selected_ids == [child_id]
+    assert payload["draft"]["id"] == child_id
+    get_settings.cache_clear()
+
+
+def test_review_revision_uses_selected_draft_not_latest_then_exports_child(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.delenv("IMAGE_API_KEY", raising=False)
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
+    get_settings.cache_clear()
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        run = _run(session)
+        run_workflow(session, run.id, _brief())
+        selected = repo.get_selected_or_recommended_draft(session, run.id)
+        assert selected is not None
+        newest = repo.add_draft(
+            session,
+            run.id,
+            title=selected.title,
+            body=selected.body,
+            tags=selected.tags,
+            first_comment=selected.first_comment,
+            narrative_plan=selected.narrative_plan,
+            quality_report=selected.quality_report,
+            score=selected.score,
+            selected=False,
+        )
+        assert newest.version > selected.version
+        revise = workflow_service.review_run(
+            session,
+            run.id,
+            ReviewRequest(action="revise", instructions="Make the tone more conversational."),
+        )
+        child = next(draft for draft in repo.list_drafts(session, run.id) if draft.id == revise["draft_id"])
+        workflow_service.review_run(session, run.id, ReviewRequest(action="approve"))
+        selected_id = selected.id
+        child_id = child.id
+        child_parent_id = child.parent_draft_id
+
+    payload = json.loads((tmp_path / "exports" / str(run.id) / "package.json").read_text("utf-8"))
+    assert child_parent_id == selected_id
     assert payload["draft"]["id"] == child_id
     get_settings.cache_clear()
