@@ -20,7 +20,7 @@ Implemented the local asynchronous workbench backend with the exact run states `
 - Provider/export hardening: `app/services/content_pipeline.py`, `app/services/image_rules.py`, `app/services/export_service.py`
 - Persistence/contracts: `app/config.py`, `app/models.py`, `app/repositories/runs.py`, `app/schemas.py`
 - Compatibility state cleanup: `app/services/workflow_service.py`, `app/workflow/graph.py`
-- Migration: `migrations/versions/20260730_0004_worker_state.py`
+- Migrations: `migrations/versions/20260730_0004_worker_state.py`, `migrations/versions/20260730_0005_step_heartbeat.py`
 - Tests: `tests/test_async_workbench_api.py`, `tests/test_api.py`, `tests/test_migrate.py`
 
 ## TDD evidence
@@ -78,3 +78,58 @@ The deterministic integration suite covers the complete mock flow and both gates
 
 - `50fda3e feat: add durable workbench backend` contains the implementation, migration, and tests.
 - The report itself is committed separately after that implementation commit so it can record the implementation hash exactly.
+- `e5dddf8 fix: harden durable backend invariants` resolves all six Important review findings and adds the 0005 migration plus covering regressions.
+
+## Important-review fixes
+
+The six Important findings from the review of `593bd32` are resolved:
+
+1. Content eligibility is enforced at both mutations. Selection returns 409 for a hard-rule-failing draft, copy approval requires a selected/recommended hard pass, and a retried persisted round with no recommendation creates a second failed phase attempt without regenerating candidates or advancing to review.
+2. Cancellation is checked in exception paths and used as a conditional state transition. Image assets, image QC, the completed phase attempt, and `asset_review_required` publish in one transaction guarded by `status = image_running`; cancel deletes image rows if it commits immediately after publish, so either serialization order ends with no published rows on a canceled run.
+3. API state actions no longer commit through repository helpers. Draft/review/run changes and the idempotency result flush into one transaction and commit once. An injected failure at the commit boundary rolls back all three; the subsequent same-key request succeeds once and replay returns the original stored response.
+4. `20260730_0005` adds `run_steps.heartbeat_at`. Text/image phase attempts are inserted as `running` before provider work, heartbeated, and finished in place. Stale recovery marks an abandoned running attempt failed with an interruption error and duration before requeue; the next claim increments its attempt number.
+5. Run insertion and all upload claims share one transaction. Every claim is a conditional `UPDATE ... WHERE run_id IS NULL`; a stale second session receives a conflict and its newly inserted run rolls back.
+6. Internal database errors retain diagnostics, while run detail, run list, step responses, and exported audit JSON replace errors containing Windows or POSIX absolute paths with a fixed redacted message.
+
+### Review-fix RED evidence
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py -q --basetemp=.pytest-tmp/task3-review-red -p no:cacheprovider
+```
+
+Result before fixes: 8 failed, 10 passed. The failures reproduced no-recommendation retry advancement, canceled-to-failed overwrite, non-atomic image publish, non-atomic idempotent mutation, unaudited stale attempts, and absolute-path leakage. The two content/upload tests initially also exposed missing test imports; after those imports were corrected, their assertions exercised the intended implementation gaps.
+
+### Exact covering tests
+
+- `test_hard_rule_failure_cannot_be_selected_or_approved`
+- `test_retry_persisted_round_without_recommendation_stays_failed`
+- `test_cancel_wins_when_provider_raises_after_cancellation`
+- `test_cancel_at_atomic_image_publish_leaves_no_asset_rows`
+- `test_idempotent_business_action_rolls_back_as_one_unit`
+- `test_stale_recovery_interrupts_running_attempt_then_increments`
+- `test_upload_claim_is_conditional_across_stale_sessions`
+- `test_api_redacts_absolute_paths_from_run_and_step_errors`
+
+Focused command and result:
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py -q -k "hard_rule or retry_persisted or cancel_wins or atomic_image or idempotent_business or stale_recovery_interrupts or upload_claim_is or redacts_absolute" --basetemp=.pytest-tmp/task3-review-focused-final -p no:cacheprovider
+```
+
+Result: 8 passed, 10 deselected, 1 upstream warning in 7.39s.
+
+Final validation after review fixes:
+
+```powershell
+python -m pytest -q --basetemp=.pytest-tmp/task3-review-full-final2 -p no:cacheprovider
+python -m ruff check app tests migrations
+git diff --check
+```
+
+Results:
+
+- Full pytest: 53 passed, 1 warning in 16.92s.
+- Ruff: all checks passed.
+- Diff whitespace check: passed; Git emitted only LF-to-CRLF working-copy notices.
+- The warning remains the installed `fastapi.testclient` Starlette/httpx deprecation warning.
+- Tests used only workspace-local temporary migrated SQLite databases. No paid provider or real `xhs_workflow.db` was used.
