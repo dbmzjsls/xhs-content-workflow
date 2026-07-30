@@ -78,12 +78,28 @@ def load_examples() -> list[dict[str, Any]]:
     examples = _read_yaml("examples.yaml").get("examples")
     if not isinstance(examples, list):
         raise ValueError("content examples must be a list")
-    required = {"id", "type", "audience_tags", "function_tags", "style_tags", "title", "body", "tags", "rationale"}
+    required = {
+        "id", "type", "audience_tags", "function_tags", "style_tags", "title", "body", "tags", "rationale"
+    }
+    text_fields = ("id", "title", "body", "rationale")
+    tag_fields = ("audience_tags", "function_tags", "style_tags", "tags")
+    ids: set[str] = set()
     for example in examples:
         if not isinstance(example, dict) or not required <= example.keys():
             raise ValueError("every content example must include the required fields")
+        for field in text_fields:
+            if not isinstance(example[field], str) or not example[field]:
+                raise ValueError(f"content example {field} must be a non-empty string")
+        for field in tag_fields:
+            if not isinstance(example[field], list) or not all(
+                isinstance(item, str) and item for item in example[field]
+            ):
+                raise ValueError(f"content example {field} must be a list of non-empty strings")
         if example["type"] not in {"positive", "negative"}:
             raise ValueError("example type must be positive or negative")
+        if example["id"] in ids:
+            raise ValueError(f"content examples contain duplicate id: {example['id']}")
+        ids.add(example["id"])
     return examples
 
 
@@ -178,24 +194,45 @@ class MockPipelineProvider:
         return repaired
 
     def revise_draft(self, draft, brief, instructions, hard_rules):
-        """A deterministic rewrite, not a revision note appended to the old body."""
-        focus = _instruction_focus(instructions)
+        """Rewrite the narrative by intent without quoting or appending the instruction."""
         original = str(draft.get("body") or "").strip()
-        rewritten = re.sub(r"\s*[—-]\s*so I focused on .*?[.。]\s*$", "", original)
-        sentence = f"— so I focused on {focus}."
-        max_original = 400 - len(sentence)
-        rewritten = rewritten[:max_original].rstrip(" 。.")
+        body = _mock_revision_body(instructions)
+        if "short" in instructions.casefold() or "缩短" in instructions or "精简" in instructions:
+            body = body[: min(len(original) - 1, 120)].rstrip(" 。.")
+            if content_rules.BRAND_FULL not in body:
+                body = _mock_revision_body("short")
         return {
             "title": str(draft.get("title") or "Draft"),
-            "body": f"{rewritten} {sentence}".strip(),
+            "body": body[:400].rstrip(),
             "tags": list(draft.get("tags") or []),
             "first_comment": draft.get("first_comment") or "What would you revise first?",
         }
 
 
-def _instruction_focus(instructions: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", instructions.casefold())
-    return " ".join(tokens[:8]) or "one concrete next step"
+def _mock_revision_body(instructions: str) -> str:
+    """Map revision intent to an actual post rewrite, not a hidden instruction note."""
+    lower = instructions.casefold()
+    prefix = (
+        f"晚上在书桌前，我又读了一遍那段作文。后来，{content_rules.BRAND_FULL} "
+        "让我发现例子没有回应观点。"
+    )
+    if any(token in lower for token in ("product", "sales", "ad", "weaken")) or any(
+        token in instructions for token in ("弱化", "产品感", "广告感")
+    ):
+        return f"{prefix} I kept the tool in the background and rewrote the example myself."
+    if any(token in lower for token in ("record", "ending", "authentic")) or any(
+        token in instructions for token in ("记录", "结尾", "真实")
+    ):
+        return f"{prefix} I wrote that one mistake into tonight's study record before closing the notebook."
+    if any(token in lower for token in ("conversation", "conversational", "casual")) or any(
+        token in instructions for token in ("口语", "聊天", "自然")
+    ):
+        return f"{prefix} Honestly, I only fixed that one line tonight."
+    if any(token in lower for token in ("short", "shorten", "concise")) or any(
+        token in instructions for token in ("缩短", "精简")
+    ):
+        return f"晚上书桌前，我看作文。后来，{content_rules.BRAND_FULL} 让我发现例子没回应观点。I fixed one line."
+    return f"{prefix} I paused, rewrote one line, and left the rest for tomorrow."
 
 
 class OpenAICompatiblePipelineProvider:
@@ -421,7 +458,7 @@ def create_revision(
         first_comment=evaluated["first_comment"], narrative_plan={"angle": parent.angle, "revision_instructions": instructions},
         quality_report={"hard": evaluated["hard_report"], "soft": evaluated["score_report"], "parent_draft_id": parent.id},
         round=parent.round + 1, candidate=parent.candidate, parent_draft_id=parent.id,
-        angle=parent.angle, source=f"revision:{provider.name}", score=evaluated["score"], selected=False,
+        angle=parent.angle, source=f"revision:{provider.name}", score=evaluated["score"], selected=True,
     )
     repo.record_step(session, parent.run_id, "draft_revision", {"parent_draft_id": parent.id, "instructions": instructions}, {
         "child_draft_id": child.id, "policy_version": policy["version"], "provider": provider.name, "model": provider.model,

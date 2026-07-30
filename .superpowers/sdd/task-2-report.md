@@ -27,6 +27,23 @@
 - `ruff check .` — passed.
 - `git diff --check` — passed.
 
+## Final revision-selection remediation
+
+- A persisted provider revision now becomes the run's only selected draft in
+  the same draft-persistence transaction, so approval/export selects the child
+  rather than its parent.
+- Mock revisions now select an intent-specific narrative rewrite (product in
+  the background, study-record ending, conversational voice, shorter version,
+  or generic restructure). They do not append or quote reviewer instructions.
+- Added example-library value-type and duplicate-ID validation.
+
+### Exact final-remediation test evidence
+
+- `pytest tests/test_content_pipeline.py tests/test_candidate_workflow.py tests/test_api.py tests/test_llm_provider.py -q -p no:cacheprovider --basetemp .test-tmp-task2-finalfix-focused` — `21 passed`.
+- `pytest -q -p no:cacheprovider --basetemp .test-tmp-task2-finalfix-full` — `36 passed`.
+- `ruff check .` — `All checks passed!`.
+- `git diff --check` — passed.
+
 ### Final rerun after selection-uniqueness review
 
 - `pytest tests/test_content_pipeline.py tests/test_candidate_workflow.py tests/test_api.py tests/test_llm_provider.py -q -p no:cacheprovider --basetemp .test-tmp-task2-final-focused` — `19 passed`.

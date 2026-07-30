@@ -177,13 +177,20 @@ def test_persisted_candidates_and_provider_revision_keep_real_parent_child_link(
 def test_mock_revision_changes_with_the_supplied_instructions():
     provider = content_pipeline.MockPipelineProvider()
     draft = _valid_draft(1)
-    practical = provider.revise_draft(draft, _brief(), "Make the ending more practical.", {})
-    shorter = provider.revise_draft(draft, _brief(), "Make it shorter.", {})
+    instructions = [
+        "Make the product feel less prominent.",
+        "Change the ending into an authentic record.",
+        "Make the tone more conversational.",
+        "Make it shorter.",
+        "Reshape the narrative.",
+    ]
+    revisions = [provider.revise_draft(draft, _brief(), instruction, {}) for instruction in instructions]
 
-    assert practical["body"] != draft["body"]
-    assert practical["body"] != shorter["body"]
-    assert "practical" in practical["body"].lower()
-    assert "shorter" in shorter["body"].lower()
+    assert all(revised["body"] != draft["body"] for revised in revisions)
+    assert len({revised["body"] for revised in revisions}) == len(revisions)
+    assert all(instruction.casefold() not in revised["body"].casefold() for instruction, revised in zip(instructions, revisions))
+    assert all(content_pipeline.hard_rule_check(revised)["passed"] for revised in revisions)
+    assert len(revisions[3]["body"]) < len(draft["body"])
 
 
 def test_policy_requires_non_empty_string_collections(monkeypatch):
@@ -202,3 +209,25 @@ def test_policy_requires_non_empty_string_collections(monkeypatch):
 
     with pytest.raises(ValueError, match="required_tags"):
         content_pipeline.load_policy()
+
+
+def test_examples_reject_duplicate_ids_and_invalid_tag_value_types(monkeypatch):
+    valid = {
+        "id": "example",
+        "type": "positive",
+        "audience_tags": ["ielts"],
+        "function_tags": ["writing"],
+        "style_tags": ["memoir"],
+        "title": "title",
+        "body": "body",
+        "tags": ["#tag"],
+        "rationale": "why",
+    }
+    monkeypatch.setattr(content_pipeline, "_read_yaml", lambda name: {"examples": [valid, dict(valid)]})
+    with pytest.raises(ValueError, match="duplicate"):
+        content_pipeline.load_examples()
+
+    invalid = {**valid, "id": "other", "tags": "#not-a-list"}
+    monkeypatch.setattr(content_pipeline, "_read_yaml", lambda name: {"examples": [invalid]})
+    with pytest.raises(ValueError, match="tags"):
+        content_pipeline.load_examples()

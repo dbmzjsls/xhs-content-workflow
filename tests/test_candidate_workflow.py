@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.config import get_settings
 from app.models import ContentRun
 from app.repositories import runs as repo
-from app.services import export_service
+from app.services import content_pipeline, export_service
 from app.workflow.graph import run_workflow
 
 
@@ -105,4 +105,39 @@ def test_export_falls_back_to_best_recommended_candidate(monkeypatch, tmp_path):
 
     payload = json.loads((tmp_path / "exports" / str(run.id) / "package.json").read_text("utf-8"))
     assert payload["draft"]["id"] == best_id
+    get_settings.cache_clear()
+
+
+def test_revision_becomes_selected_and_is_the_draft_exported(monkeypatch, tmp_path):
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
+    get_settings.cache_clear()
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        run = _run(session)
+        result = content_pipeline.generate_candidate_round(
+            _brief(), provider=content_pipeline.MockPipelineProvider()
+        )
+        drafts = content_pipeline.persist_candidate_round(session, run.id, result)
+        parent = next(draft for draft in drafts if draft.selected)
+        child = content_pipeline.create_revision(
+            session,
+            parent,
+            _brief(),
+            "Make the tone more conversational.",
+            provider=content_pipeline.MockPipelineProvider(),
+        )
+        all_drafts = repo.list_drafts(session, run.id)
+        content_pipeline.hard_rule_check({
+            "title": child.title,
+            "body": child.body,
+            "tags": child.tags,
+        })
+        export_service.export_package(session, run.id)
+        child_id = child.id
+        selected_ids = [draft.id for draft in all_drafts if draft.selected]
+
+    payload = json.loads((tmp_path / "exports" / str(run.id) / "package.json").read_text("utf-8"))
+    assert selected_ids == [child_id]
+    assert payload["draft"]["id"] == child_id
     get_settings.cache_clear()
