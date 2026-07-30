@@ -22,7 +22,7 @@ from app.schemas import (
     RunSummary,
     StepRead,
 )
-from app.security import require_api_token
+from app.security import redact_internal_error, require_api_token
 from app.services import state_service
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def list_runs(
                 status=row.status,
                 current_step=row.current_step,
                 topic=row.topic,
-                error=row.error,
+                error=redact_internal_error(row.error),
                 created_at=row.created_at,
                 updated_at=row.updated_at,
             )
@@ -96,7 +96,7 @@ def select_draft(
         scope="selection",
         run_id=run_id,
         payload=payload.model_dump(),
-        action=lambda: state_service.select_draft(session, run_id, payload),
+        action=lambda: state_service.select_draft(session, run_id, payload, commit=False),
     )
 
 
@@ -113,7 +113,7 @@ def revise_draft(
         scope="revision",
         run_id=run_id,
         payload=payload.model_dump(),
-        action=lambda: state_service.revise_draft(session, run_id, payload),
+        action=lambda: state_service.revise_draft(session, run_id, payload, commit=False),
     )
 
 
@@ -129,7 +129,7 @@ def approve_copy(
         scope="copy-approval",
         run_id=run_id,
         payload={},
-        action=lambda: state_service.approve_copy(session, run_id),
+        action=lambda: state_service.approve_copy(session, run_id, commit=False),
     )
 
 
@@ -145,7 +145,7 @@ def approve_assets(
         scope="asset-approval",
         run_id=run_id,
         payload={},
-        action=lambda: state_service.approve_assets(session, run_id),
+        action=lambda: state_service.approve_assets(session, run_id, commit=False),
     )
 
 
@@ -161,7 +161,7 @@ def retry_run(
         scope="retry",
         run_id=run_id,
         payload={},
-        action=lambda: state_service.retry(session, run_id),
+        action=lambda: state_service.retry(session, run_id, commit=False),
     )
 
 
@@ -177,7 +177,7 @@ def cancel_run(
         scope="cancel",
         run_id=run_id,
         payload={},
-        action=lambda: state_service.cancel(session, run_id),
+        action=lambda: state_service.cancel(session, run_id, commit=False),
     )
 
 
@@ -261,7 +261,7 @@ def _read_run(session: Session, run_id: int) -> RunRead:
         style_preference=run.style_preference,
         brief=_public_payload(run.brief),
         final_package=_public_payload(run.final_package),
-        error=run.error,
+        error=redact_internal_error(run.error),
         created_at=run.created_at,
         updated_at=run.updated_at,
         steps=[
@@ -272,9 +272,10 @@ def _read_run(session: Session, run_id: int) -> RunRead:
                 created_at=step.created_at,
                 attempt=step.attempt,
                 started_at=step.started_at,
+                heartbeat_at=step.heartbeat_at,
                 completed_at=step.completed_at,
                 duration_ms=step.duration_ms,
-                error=step.error,
+                error=redact_internal_error(step.error),
             )
             for step in repo.list_steps(session, run_id)
         ],

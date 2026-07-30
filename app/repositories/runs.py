@@ -17,11 +17,12 @@ from app.models import (
 from app.time_utils import utc_now
 
 
-def create_run(session: Session, payload: dict[str, Any]) -> ContentRun:
+def create_run(
+    session: Session, payload: dict[str, Any], *, commit: bool = True
+) -> ContentRun:
     run = ContentRun(**payload)
     session.add(run)
-    session.commit()
-    session.refresh(run)
+    _save(session, run, commit=commit)
     return run
 
 
@@ -44,6 +45,7 @@ def update_run(
     failed_phase: str | None = None,
     clear_error: bool = False,
     clear_failed_phase: bool = False,
+    commit: bool = True,
 ) -> ContentRun:
     run = session.get(ContentRun, run_id)
     if run is None:
@@ -72,8 +74,7 @@ def update_run(
         run.failed_phase = None
     run.updated_at = utc_now()
     session.add(run)
-    session.commit()
-    session.refresh(run)
+    _save(session, run, commit=commit)
     return run
 
 
@@ -90,6 +91,7 @@ def record_step(
     completed_at: datetime | None = None,
     duration_ms: int | None = None,
     error: str | None = None,
+    commit: bool = True,
 ) -> RunStep:
     run = session.get(ContentRun, run_id)
     if run is None:
@@ -116,6 +118,7 @@ def record_step(
         output_payload=output_payload,
         attempt=attempt,
         started_at=actual_started,
+        heartbeat_at=now,
         completed_at=actual_completed,
         duration_ms=duration_ms,
         error=error,
@@ -125,8 +128,7 @@ def record_step(
     run.updated_at = utc_now()
     session.add(step)
     session.add(run)
-    session.commit()
-    session.refresh(step)
+    _save(session, step, commit=commit)
     return step
 
 
@@ -148,6 +150,7 @@ def add_draft(
     source: str | None = None,
     score: float | None = None,
     selected: bool = False,
+    commit: bool = True,
 ) -> Draft:
     if selected:
         for existing in session.exec(select(Draft).where(Draft.run_id == run_id, Draft.selected)).all():
@@ -180,8 +183,7 @@ def add_draft(
         selected=selected,
     )
     session.add(draft)
-    session.commit()
-    session.refresh(draft)
+    _save(session, draft, commit=commit)
     return draft
 
 
@@ -207,7 +209,9 @@ def get_selected_or_recommended_draft(session: Session, run_id: int) -> Draft | 
     )
 
 
-def mark_selected_or_recommended_draft_final(session: Session, run_id: int) -> Draft | None:
+def mark_selected_or_recommended_draft_final(
+    session: Session, run_id: int, *, commit: bool = True
+) -> Draft | None:
     selected_draft = get_selected_or_recommended_draft(session, run_id)
     if selected_draft is None:
         return None
@@ -215,8 +219,7 @@ def mark_selected_or_recommended_draft_final(session: Session, run_id: int) -> D
     for draft in drafts:
         draft.is_final = draft.id == selected_draft.id
         session.add(draft)
-    session.commit()
-    session.refresh(selected_draft)
+    _save(session, selected_draft, commit=commit)
     return selected_draft
 
 
@@ -236,6 +239,7 @@ def add_image_asset(
     reference_reason: str,
     file_path: str | None,
     qc_report: dict[str, Any],
+    commit: bool = True,
 ) -> ImageAsset:
     asset = ImageAsset(
         run_id=run_id,
@@ -248,8 +252,7 @@ def add_image_asset(
         qc_report=qc_report,
     )
     session.add(asset)
-    session.commit()
-    session.refresh(asset)
+    _save(session, asset, commit=commit)
     return asset
 
 
@@ -261,11 +264,11 @@ def add_reference(
     role: str,
     path: str,
     reason: str,
+    commit: bool = True,
 ) -> ReferenceAsset:
     ref = ReferenceAsset(run_id=run_id, source=source, role=role, path=path, reason=reason)
     session.add(ref)
-    session.commit()
-    session.refresh(ref)
+    _save(session, ref, commit=commit)
     return ref
 
 
@@ -276,6 +279,7 @@ def add_review_action(
     action: str,
     instructions: str | None,
     replacement: dict[str, Any] | None,
+    commit: bool = True,
 ) -> ReviewAction:
     row = ReviewAction(
         run_id=run_id,
@@ -284,8 +288,7 @@ def add_review_action(
         replacement=replacement,
     )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    _save(session, row, commit=commit)
     return row
 
 
@@ -342,3 +345,91 @@ def list_uploads(session: Session, run_id: int) -> list[UploadAsset]:
 
 def get_idempotency(session: Session, key: str) -> IdempotencyRecord | None:
     return session.exec(select(IdempotencyRecord).where(IdempotencyRecord.key == key)).first()
+
+
+def start_step(
+    session: Session,
+    run_id: int,
+    name: str,
+    input_payload: dict[str, Any],
+) -> RunStep:
+    now = utc_now()
+    attempt = (
+        session.exec(
+            select(func.coalesce(func.max(RunStep.attempt), 0) + 1).where(
+                RunStep.run_id == run_id, RunStep.name == name
+            )
+        ).one()
+        or 1
+    )
+    step = RunStep(
+        run_id=run_id,
+        name=name,
+        status="running",
+        input_payload=input_payload,
+        output_payload={},
+        attempt=attempt,
+        started_at=now,
+        heartbeat_at=now,
+    )
+    run = get_run(session, run_id)
+    if run is None:
+        raise ValueError(f"run {run_id} not found")
+    run.current_step = name
+    run.heartbeat_at = now
+    run.updated_at = now
+    session.add(run)
+    session.add(step)
+    session.commit()
+    session.refresh(step)
+    return step
+
+
+def heartbeat_step(session: Session, run_id: int, step_id: int) -> None:
+    now = utc_now()
+    step = session.get(RunStep, step_id)
+    run = get_run(session, run_id)
+    if step is None or run is None:
+        raise ValueError("run step not found")
+    step.heartbeat_at = now
+    run.heartbeat_at = now
+    run.updated_at = now
+    session.add(step)
+    session.add(run)
+    session.commit()
+
+
+def finish_step(
+    session: Session,
+    step_id: int,
+    *,
+    status: str,
+    output_payload: dict[str, Any] | None = None,
+    error: str | None = None,
+    commit: bool = True,
+) -> RunStep:
+    step = session.get(RunStep, step_id)
+    if step is None:
+        raise ValueError(f"run step {step_id} not found")
+    now = utc_now()
+    step.status = status
+    step.output_payload = output_payload or {}
+    step.error = error
+    step.heartbeat_at = now
+    step.completed_at = now
+    if step.started_at is not None:
+        comparable_now = now if step.started_at.tzinfo else now.replace(tzinfo=None)
+        step.duration_ms = max(
+            0, int((comparable_now - step.started_at).total_seconds() * 1000)
+        )
+    session.add(step)
+    _save(session, step, commit=commit)
+    return step
+
+
+def _save(session: Session, row, *, commit: bool) -> None:
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()

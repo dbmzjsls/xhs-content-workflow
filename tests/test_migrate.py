@@ -68,7 +68,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path):
     assert {"alembic_version", "content_runs", "upload_assets", "idempotency_records"} <= tables
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0004",
+            "20260730_0005",
         )
         assert {
             "workflow_name",
@@ -77,7 +77,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path):
             "model",
             "heartbeat_at",
         } <= {row[1] for row in connection.execute("PRAGMA table_info(content_runs)")}
-        assert {"attempt", "started_at", "completed_at", "duration_ms", "error"} <= {
+        assert {"attempt", "started_at", "heartbeat_at", "completed_at", "duration_ms", "error"} <= {
             row[1] for row in connection.execute("PRAGMA table_info(run_steps)")
         }
         assert {"round", "candidate", "parent_draft_id", "angle", "source", "score", "selected"} <= {
@@ -134,7 +134,7 @@ def test_legacy_database_is_backed_up_and_rows_are_preserved(tmp_path: Path):
             "legacy title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0004",
+            "20260730_0005",
         )
 
 
@@ -210,7 +210,7 @@ def test_versioned_database_upgrades_from_0002_to_head_preserving_rows(tmp_path:
             "versioned title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260730_0004",
+            "20260730_0005",
         )
 
 

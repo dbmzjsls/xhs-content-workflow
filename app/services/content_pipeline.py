@@ -449,6 +449,7 @@ def create_revision(
     instructions: str,
     *,
     provider: PipelineProvider | None = None,
+    commit: bool = True,
 ) -> Draft:
     if parent.id is None:
         raise ValueError("parent draft must be persisted")
@@ -465,8 +466,9 @@ def create_revision(
         quality_report={"hard": evaluated["hard_report"], "soft": evaluated["score_report"], "parent_draft_id": parent.id},
         round=parent.round + 1, candidate=parent.candidate, parent_draft_id=parent.id,
         angle=parent.angle, source=f"revision:{provider.name}", score=evaluated["score"], selected=True,
+        commit=commit,
     )
     repo.record_step(session, parent.run_id, "draft_revision", {"parent_draft_id": parent.id, "instructions": instructions}, {
         "child_draft_id": child.id, "policy_version": policy["version"], "provider": provider.name, "model": provider.model,
-    })
+    }, commit=commit)
     return child

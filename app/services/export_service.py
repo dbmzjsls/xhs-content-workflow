@@ -10,13 +10,14 @@ from sqlmodel import Session
 
 from app.config import get_settings
 from app.repositories import runs as repo
+from app.security import redact_internal_error
 
 
-def export_package(session: Session, run_id: int) -> dict:
+def export_package(session: Session, run_id: int, *, commit: bool = True) -> dict:
     run = repo.get_run(session, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    draft = repo.mark_selected_or_recommended_draft_final(session, run_id)
+    draft = repo.mark_selected_or_recommended_draft_final(session, run_id, commit=commit)
     if draft is None:
         raise ValueError("no draft to export")
     images = repo.list_images(session, run_id)
@@ -57,7 +58,7 @@ def export_package(session: Session, run_id: int) -> dict:
                 "started_at": step.started_at.isoformat() if step.started_at else None,
                 "completed_at": step.completed_at.isoformat() if step.completed_at else None,
                 "duration_ms": step.duration_ms,
-                "error": step.error,
+                "error": redact_internal_error(step.error),
             }
             for step in steps
         ],
@@ -89,7 +90,14 @@ def export_package(session: Session, run_id: int) -> dict:
         "json_url": f"/api/runs/{run_id}/exports/json",
         "zip_url": f"/api/runs/{run_id}/exports/zip",
     }
-    repo.update_run(session, run_id, status="completed", current_step="export_package", final_package=final_package)
+    repo.update_run(
+        session,
+        run_id,
+        status="completed",
+        current_step="export_package",
+        final_package=final_package,
+        commit=commit,
+    )
     return final_package
 
 

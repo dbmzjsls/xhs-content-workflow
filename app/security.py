@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
 from fastapi import Header, HTTPException, status
 
 from app.config import get_settings
+
+_ABSOLUTE_PATH = re.compile(r"(?:\b[a-zA-Z]:[\\/]|(?:^|\s)/[^\s])")
 
 
 def require_api_token(
@@ -29,3 +32,11 @@ def require_api_token(
         detail="authentication required",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def redact_internal_error(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if _ABSOLUTE_PATH.search(value):
+        return "workflow execution failed; internal path redacted"
+    return value

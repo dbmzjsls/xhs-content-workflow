@@ -51,6 +51,7 @@ class StepRead(BaseModel):
     created_at: datetime
     attempt: int
     started_at: datetime | None
+    heartbeat_at: datetime | None
     completed_at: datetime | None
     duration_ms: int | None
     error: str | None

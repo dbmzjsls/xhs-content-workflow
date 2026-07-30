@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from time import monotonic
 from typing import Any, Callable
 
+from sqlalchemy import update
 from sqlmodel import Session
 
+from app.models import ContentRun
 from app.repositories import runs as repo
 from app.services import content_pipeline, content_rules, image_rules
 from app.time_utils import utc_now
@@ -21,8 +22,7 @@ def run_text_phase(session: Session, run_id: int) -> None:
     run = repo.get_run(session, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    started = utc_now()
-    clock = monotonic()
+    phase_step = repo.start_step(session, run_id, "text_generation", {"brief": run.brief})
     try:
         _require_active(session, run_id, "running")
         brief = _completed_output(session, run_id, "brief_normalize")
@@ -44,53 +44,44 @@ def run_text_phase(session: Session, run_id: int) -> None:
             )
 
         if _completed_output(session, run_id, "candidate_round") is None:
-            _heartbeat(session, run_id)
+            _heartbeat(session, run_id, phase_step.id)
             result = content_pipeline.generate_candidate_round(brief)
             _require_active(session, run_id, "running")
             content_pipeline.persist_candidate_round(session, run_id, result)
             if result["recommended_candidate"] is None:
                 raise RuntimeError("candidate round produced no hard-rule-passing draft")
-        repo.record_step(
-            session,
-            run_id,
-            "text_generation",
-            {"brief": brief},
-            {"candidate_count": len(repo.list_drafts(session, run_id))},
-            started_at=started,
-            duration_ms=int((monotonic() - clock) * 1000),
-        )
+        eligible = repo.get_selected_or_recommended_draft(session, run_id)
+        if eligible is None or not _is_hard_pass(eligible):
+            raise RuntimeError("candidate round produced no hard-rule-passing draft")
         _require_active(session, run_id, "running")
-        repo.update_run(
+        repo.finish_step(
             session,
-            run_id,
-            status="copy_review_required",
-            current_step="copy_review",
-            heartbeat_at=utc_now(),
-            clear_error=True,
-            clear_failed_phase=True,
+            phase_step.id,
+            status="completed",
+            output_payload={"candidate_count": len(repo.list_drafts(session, run_id))},
         )
+        _advance_text_if_active(session, run_id)
     except ExecutionCanceled:
+        session.rollback()
+        repo.finish_step(session, phase_step.id, status="failed", error="canceled")
         return
     except Exception as exc:
         logger.exception("text execution phase failed", extra={"run_id": run_id})
-        _record_phase_failure(session, run_id, "text_generation", started, clock, exc)
-        repo.update_run(
-            session,
-            run_id,
-            status="failed",
-            current_step="text_generation",
-            error=str(exc),
-            failed_phase="text",
-            heartbeat_at=utc_now(),
-        )
+        session.rollback()
+        if _run_is_canceled(session, run_id):
+            repo.finish_step(session, phase_step.id, status="failed", error="canceled")
+            return
+        repo.finish_step(session, phase_step.id, status="failed", error=str(exc))
+        _mark_failed_if_active(session, run_id, "running", "text", str(exc))
 
 
 def run_image_phase(session: Session, run_id: int) -> None:
     run = repo.get_run(session, run_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    started = utc_now()
-    clock = monotonic()
+    phase_step = repo.start_step(
+        session, run_id, "image_generation", {"selected_draft": True}
+    )
     try:
         _require_active(session, run_id, "image_running")
         _validate_image_provider()
@@ -145,7 +136,7 @@ def run_image_phase(session: Session, run_id: int) -> None:
 
         generated_output = _completed_output(session, run_id, "image_generate")
         if generated_output is None:
-            _heartbeat(session, run_id)
+            _heartbeat(session, run_id, phase_step.id)
             generated = image_rules.generate_image_assets(run_id, prompts)
             _require_active(session, run_id, "image_running")
             repo.record_step(
@@ -158,52 +149,23 @@ def run_image_phase(session: Session, run_id: int) -> None:
             qc = image_rules.image_qc(generated)
             if not qc["passed"]:
                 raise RuntimeError("image quality checks failed: " + "; ".join(qc["issues"]))
-            for asset in generated:
-                repo.add_image_asset(
-                    session,
-                    run_id,
-                    kind=asset["kind"],
-                    status=asset["status"],
-                    title=asset["title"],
-                    prompt=asset["prompt"],
-                    reference_reason=asset["reference_reason"],
-                    file_path=asset["file_path"],
-                    qc_report=qc,
-                )
-            repo.record_step(session, run_id, "image_qc", {"items": generated}, qc)
-        repo.record_step(
-            session,
-            run_id,
-            "image_generation",
-            {"draft_id": draft_id},
-            {"asset_count": len(repo.list_images(session, run_id))},
-            started_at=started,
-            duration_ms=int((monotonic() - clock) * 1000),
-        )
-        _require_active(session, run_id, "image_running")
-        repo.update_run(
-            session,
-            run_id,
-            status="asset_review_required",
-            current_step="asset_review",
-            heartbeat_at=utc_now(),
-            clear_error=True,
-            clear_failed_phase=True,
+        else:
+            qc = _completed_output(session, run_id, "image_qc") or {}
+        _publish_images_atomically(
+            session, run_id, phase_step.id, draft_id, generated, qc
         )
     except ExecutionCanceled:
+        session.rollback()
+        repo.finish_step(session, phase_step.id, status="failed", error="canceled")
         return
     except Exception as exc:
         logger.exception("image execution phase failed", extra={"run_id": run_id})
-        _record_phase_failure(session, run_id, "image_generation", started, clock, exc)
-        repo.update_run(
-            session,
-            run_id,
-            status="failed",
-            current_step="image_generation",
-            error=str(exc),
-            failed_phase="image",
-            heartbeat_at=utc_now(),
-        )
+        session.rollback()
+        if _run_is_canceled(session, run_id):
+            repo.finish_step(session, phase_step.id, status="failed", error="canceled")
+            return
+        repo.finish_step(session, phase_step.id, status="failed", error=str(exc))
+        _mark_failed_if_active(session, run_id, "image_running", "image", str(exc))
 
 
 def _step_value(
@@ -226,22 +188,6 @@ def _completed_output(session: Session, run_id: int, name: str) -> dict[str, Any
     return completed[-1].output_payload if completed else None
 
 
-def _record_phase_failure(
-    session: Session, run_id: int, name: str, started, clock: float, exc: Exception
-) -> None:
-    repo.record_step(
-        session,
-        run_id,
-        name,
-        {},
-        {},
-        status="failed",
-        started_at=started,
-        duration_ms=int((monotonic() - clock) * 1000),
-        error=str(exc),
-    )
-
-
 def _validate_image_provider() -> None:
     from app.config import get_settings
 
@@ -250,8 +196,8 @@ def _validate_image_provider() -> None:
         raise RuntimeError(f"unsupported image provider: {provider}")
 
 
-def _heartbeat(session: Session, run_id: int) -> None:
-    repo.update_run(session, run_id, heartbeat_at=utc_now())
+def _heartbeat(session: Session, run_id: int, step_id: int) -> None:
+    repo.heartbeat_step(session, run_id, step_id)
 
 
 def _require_active(session: Session, run_id: int, expected: str) -> None:
@@ -263,3 +209,105 @@ def _require_active(session: Session, run_id: int, expected: str) -> None:
         raise ExecutionCanceled()
     if run.status != expected:
         raise RuntimeError(f"run changed state during execution: {run.status}")
+
+
+def _is_hard_pass(draft) -> bool:
+    return draft.quality_report.get("hard", {}).get("passed") is True
+
+
+def _run_is_canceled(session: Session, run_id: int) -> bool:
+    session.expire_all()
+    run = repo.get_run(session, run_id)
+    return run is not None and run.status == "canceled"
+
+
+def _mark_failed_if_active(
+    session: Session, run_id: int, expected: str, phase: str, error: str
+) -> None:
+    now = utc_now()
+    session.exec(
+        update(ContentRun)
+        .where(ContentRun.id == run_id, ContentRun.status == expected)
+        .values(
+            status="failed",
+            current_step=f"{phase}_generation",
+            error=error,
+            failed_phase=phase,
+            heartbeat_at=now,
+            updated_at=now,
+        )
+    )
+    session.commit()
+
+
+def _advance_text_if_active(session: Session, run_id: int) -> None:
+    now = utc_now()
+    transitioned = session.exec(
+        update(ContentRun)
+        .where(ContentRun.id == run_id, ContentRun.status == "running")
+        .values(
+            status="copy_review_required",
+            current_step="copy_review",
+            error=None,
+            failed_phase=None,
+            heartbeat_at=now,
+            updated_at=now,
+        )
+    )
+    session.commit()
+    if transitioned.rowcount != 1:
+        raise ExecutionCanceled()
+
+
+def _publish_images_atomically(
+    session: Session,
+    run_id: int,
+    phase_step_id: int,
+    draft_id: int,
+    generated: list[dict[str, Any]],
+    qc: dict[str, Any],
+) -> None:
+    hook = globals().get("_before_image_publish")
+    if hook is not None:
+        hook(run_id)
+    session.rollback()
+    now = utc_now()
+    transitioned = session.exec(
+        update(ContentRun)
+        .where(ContentRun.id == run_id, ContentRun.status == "image_running")
+        .values(
+            status="asset_review_required",
+            current_step="asset_review",
+            error=None,
+            failed_phase=None,
+            heartbeat_at=now,
+            updated_at=now,
+        )
+    )
+    if transitioned.rowcount != 1:
+        session.rollback()
+        raise ExecutionCanceled()
+    for asset in generated:
+        repo.add_image_asset(
+            session,
+            run_id,
+            kind=asset["kind"],
+            status=asset["status"],
+            title=asset["title"],
+            prompt=asset["prompt"],
+            reference_reason=asset["reference_reason"],
+            file_path=asset["file_path"],
+            qc_report=qc,
+            commit=False,
+        )
+    repo.record_step(
+        session, run_id, "image_qc", {"items": generated}, qc, commit=False
+    )
+    repo.finish_step(
+        session,
+        phase_step_id,
+        status="completed",
+        output_payload={"draft_id": draft_id, "asset_count": len(generated)},
+        commit=False,
+    )
+    session.commit()

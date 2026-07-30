@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from threading import Event, Thread
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -10,8 +11,17 @@ from app.config import get_settings
 from app.db import get_engine, reset_engine_for_tests
 from app.main import app
 from app.migrate import migrate_database
-from app.models import ContentRun, RunStep, UploadAsset
-from app.services import image_rules, state_service
+from app.models import (
+    ContentRun,
+    IdempotencyRecord,
+    ImageAsset,
+    ReviewAction,
+    RunStep,
+    UploadAsset,
+)
+from app.repositories import runs as repo
+from app.schemas import RunCreate
+from app.services import content_pipeline, execution_service, image_rules, state_service
 from app.services.worker import get_worker
 from app.time_utils import utc_now
 
@@ -334,3 +344,261 @@ def test_step_failure_records_attempt_timing_and_error(tmp_path, monkeypatch):
     assert steps[0].attempt == 1
     assert steps[0].started_at and steps[0].completed_at and steps[0].duration_ms is not None
     assert "unsupported LLM provider" in (steps[0].error or "")
+
+
+def test_hard_rule_failure_cannot_be_selected_or_approved(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    with Session(get_engine()) as session:
+        drafts = repo.list_drafts(session, run["id"])
+        failing = drafts[0]
+        failing.quality_report = {"hard": {"passed": False, "issues": ["forced"]}}
+        failing.selected = False
+        session.add(failing)
+        session.commit()
+        failing_id = failing.id
+
+    rejected = client.post(
+        f"/api/runs/{run['id']}/selection",
+        json={"draft_id": failing_id},
+        headers=_idempotency("reject-hard-fail"),
+    )
+    assert rejected.status_code == 409
+
+    with Session(get_engine()) as session:
+        for draft in repo.list_drafts(session, run["id"]):
+            draft.selected = False
+            draft.quality_report = {"hard": {"passed": False, "issues": ["forced"]}}
+            session.add(draft)
+        session.commit()
+    bypass = client.post(
+        f"/api/runs/{run['id']}/copy-approval",
+        headers=_idempotency("reject-approval-bypass"),
+    )
+    assert bypass.status_code == 409
+
+
+def test_retry_persisted_round_without_recommendation_stays_failed(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    original = content_pipeline.generate_candidate_round
+
+    def no_recommendation(brief):
+        result = original(brief)
+        result["recommended_candidate"] = None
+        for candidate in result["candidates"]:
+            candidate["recommended"] = False
+            candidate["hard_report"] = {"passed": False, "issues": ["forced"]}
+            candidate["score_report"]["hard_passed"] = False
+        return result
+
+    monkeypatch.setattr(content_pipeline, "generate_candidate_round", no_recommendation)
+    run = _create(client)
+    get_worker().run_once()
+    assert client.get(f"/api/runs/{run['id']}").json()["status"] == "failed"
+
+    assert client.post(f"/api/runs/{run['id']}/retry").json()["status"] == "queued"
+    get_worker().run_once()
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "failed"
+    assert [step["name"] for step in detail["steps"]].count("candidate_round") == 1
+    attempts = [step for step in detail["steps"] if step["name"] == "text_generation"]
+    assert [step["attempt"] for step in attempts] == [1, 2]
+    assert all(step["status"] == "failed" for step in attempts)
+
+
+def test_cancel_wins_when_provider_raises_after_cancellation(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+    entered = Event()
+    release = Event()
+
+    def failing_provider(run_id, prompts):
+        entered.set()
+        assert release.wait(5)
+        raise RuntimeError("provider failed after cancellation")
+
+    monkeypatch.setattr(image_rules, "generate_image_assets", failing_provider)
+    thread = Thread(target=get_worker().run_once)
+    thread.start()
+    assert entered.wait(5)
+    canceled = client.post(f"/api/runs/{run['id']}/cancel")
+    assert canceled.status_code == 200
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "canceled"
+    assert detail["images"] == []
+
+
+def test_cancel_at_atomic_image_publish_leaves_no_asset_rows(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+
+    def cancel_before_publish(run_id):
+        with Session(get_engine()) as other:
+            state_service.cancel(other, run_id)
+
+    monkeypatch.setattr(
+        execution_service, "_before_image_publish", cancel_before_publish, raising=False
+    )
+    get_worker().run_once()
+    with Session(get_engine()) as session:
+        rows = session.exec(select(ImageAsset).where(ImageAsset.run_id == run["id"])).all()
+        status = session.get(ContentRun, run["id"]).status
+    assert status == "canceled"
+    assert rows == []
+
+
+def test_idempotent_business_action_rolls_back_as_one_unit(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    original_id = next(d["id"] for d in detail["drafts"] if d["selected"])
+    replacement_id = next(d["id"] for d in detail["drafts"] if d["id"] != original_id)
+
+    def fail_before_commit(session):
+        raise RuntimeError("simulated commit boundary failure")
+
+    monkeypatch.setattr(
+        state_service, "_before_transaction_commit", fail_before_commit, raising=False
+    )
+    failing_client = TestClient(app, raise_server_exceptions=False)
+    failed = failing_client.post(
+        f"/api/runs/{run['id']}/selection",
+        json={"draft_id": replacement_id},
+        headers=_idempotency("atomic-selection"),
+    )
+    assert failed.status_code == 500
+    with Session(get_engine()) as session:
+        selected = repo.get_selected_or_recommended_draft(session, run["id"])
+        actions = session.exec(select(ReviewAction).where(ReviewAction.run_id == run["id"])).all()
+        idem = session.exec(
+            select(IdempotencyRecord).where(IdempotencyRecord.key == "atomic-selection")
+        ).first()
+    assert selected.id == original_id
+    assert actions == []
+    assert idem is None
+
+    monkeypatch.delattr(state_service, "_before_transaction_commit", raising=False)
+    first = client.post(
+        f"/api/runs/{run['id']}/selection",
+        json={"draft_id": replacement_id},
+        headers=_idempotency("atomic-selection"),
+    )
+    replay = client.post(
+        f"/api/runs/{run['id']}/selection",
+        json={"draft_id": replacement_id},
+        headers=_idempotency("atomic-selection"),
+    )
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    with Session(get_engine()) as session:
+        assert len(
+            session.exec(select(ReviewAction).where(ReviewAction.run_id == run["id"])).all()
+        ) == 1
+
+
+def test_stale_recovery_interrupts_running_attempt_then_increments(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    stale = utc_now() - timedelta(hours=1)
+    with Session(get_engine()) as session:
+        row = session.get(ContentRun, run["id"])
+        row.status = "running"
+        row.heartbeat_at = stale
+        session.add(row)
+        session.add(
+            RunStep(
+                run_id=run["id"],
+                name="text_generation",
+                status="running",
+                attempt=1,
+                started_at=stale,
+                heartbeat_at=stale,
+            )
+        )
+        session.commit()
+
+    assert get_worker().recover_stale() == 1
+    with Session(get_engine()) as session:
+        interrupted = session.exec(
+            select(RunStep).where(
+                RunStep.run_id == run["id"], RunStep.name == "text_generation"
+            )
+        ).one()
+        assert interrupted.status == "failed"
+        assert interrupted.completed_at is not None
+        assert "interrupted" in (interrupted.error or "")
+    get_worker().run_once()
+    with Session(get_engine()) as session:
+        attempts = session.exec(
+            select(RunStep)
+            .where(RunStep.run_id == run["id"], RunStep.name == "text_generation")
+            .order_by(RunStep.attempt)
+        ).all()
+    assert [step.attempt for step in attempts] == [1, 2]
+    assert attempts[1].status == "completed"
+    assert attempts[1].heartbeat_at is not None
+
+
+def test_upload_claim_is_conditional_across_stale_sessions(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    upload_id = client.post(
+        "/api/uploads", files={"file": ("reference.png", PNG, "image/png")}
+    ).json()["id"]
+    first_session = Session(get_engine())
+    second_session = Session(get_engine())
+    try:
+        assert first_session.get(UploadAsset, upload_id).run_id is None
+        assert second_session.get(UploadAsset, upload_id).run_id is None
+        first = state_service.create_run(
+            first_session,
+            RunCreate(topic="one", audience="a", product_function="p", pain_point="x", upload_asset_ids=[upload_id]),
+        )
+        assert first.id is not None
+        try:
+            state_service.create_run(
+                second_session,
+                RunCreate(topic="two", audience="a", product_function="p", pain_point="x", upload_asset_ids=[upload_id]),
+            )
+        except state_service.StateConflict:
+            pass
+        else:
+            raise AssertionError("second stale claimant unexpectedly succeeded")
+    finally:
+        first_session.close()
+        second_session.close()
+    with Session(get_engine()) as session:
+        runs = repo.list_runs(session, status=None, limit=10, offset=0)[0]
+        assert len(runs) == 1
+        assert session.get(UploadAsset, upload_id).run_id == runs[0].id
+
+
+def test_api_redacts_absolute_paths_from_run_and_step_errors(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    internal = r"C:\private\secret.png and /srv/private/key.json"
+
+    def filesystem_failure(brief):
+        raise RuntimeError(internal)
+
+    monkeypatch.setattr(content_pipeline, "generate_candidate_round", filesystem_failure)
+    run = _create(client)
+    get_worker().run_once()
+    body = client.get(f"/api/runs/{run['id']}").json()
+    assert "C:\\private" not in body["error"]
+    assert "/srv/private" not in body["error"]
+    failed_step = next(step for step in body["steps"] if step["status"] == "failed")
+    assert "C:\\private" not in failed_step["error"]
+    assert "/srv/private" not in failed_step["error"]
+    listed = client.get("/api/runs").json()["items"][0]
+    assert "C:\\private" not in listed["error"]
+    assert "/srv/private" not in listed["error"]
+    with Session(get_engine()) as session:
+        assert internal in session.get(ContentRun, run["id"]).error

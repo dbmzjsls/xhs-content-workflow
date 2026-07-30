@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.db import get_engine
-from app.models import ContentRun
+from app.models import ContentRun, RunStep
 from app.services.execution_service import run_image_phase, run_text_phase
 from app.time_utils import utc_now
 
@@ -67,6 +67,29 @@ class RunWorker:
                     )
                 ).all()
                 for run in rows:
+                    attempts = session.exec(
+                        select(RunStep).where(
+                            RunStep.run_id == run.id, RunStep.status == "running"
+                        )
+                    ).all()
+                    now = utc_now()
+                    for attempt in attempts:
+                        attempt.status = "failed"
+                        attempt.error = "interrupted during stale worker recovery"
+                        attempt.completed_at = now
+                        attempt.heartbeat_at = now
+                        if attempt.started_at is not None:
+                            comparable_now = (
+                                now if attempt.started_at.tzinfo else now.replace(tzinfo=None)
+                            )
+                            attempt.duration_ms = max(
+                                0,
+                                int(
+                                    (comparable_now - attempt.started_at).total_seconds()
+                                    * 1000
+                                ),
+                            )
+                        session.add(attempt)
                     run.status = "queued" if run.status == "running" else "image_queued"
                     run.error = None
                     run.heartbeat_at = None

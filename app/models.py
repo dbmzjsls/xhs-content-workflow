@@ -43,6 +43,7 @@ class RunStep(SQLModel, table=True):
     output_payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     attempt: int = Field(default=1, index=True)
     started_at: datetime | None = Field(default=None, index=True)
+    heartbeat_at: datetime | None = Field(default=None, index=True)
     completed_at: datetime | None = None
     duration_ms: int | None = None
     error: str | None = Field(default=None, sa_column=Column(Text))
