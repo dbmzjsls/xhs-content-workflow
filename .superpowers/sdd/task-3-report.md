@@ -80,6 +80,7 @@ The deterministic integration suite covers the complete mock flow and both gates
 - The report itself is committed separately after that implementation commit so it can record the implementation hash exactly.
 - `e5dddf8 fix: harden durable backend invariants` resolves all six Important review findings and adds the 0005 migration plus covering regressions.
 - `89f874b fix: close backend publication gaps` removes remaining public path leakage, makes revision failures durable/retryable, and serializes candidate publication against cancellation.
+- `b33292a fix: serialize revision failure state` keeps rollback-to-failure publication under the mutation lock, adds structured revision attempt auditing via 0006, and fixes public gate step ordering.
 
 ## Important-review fixes
 
@@ -183,3 +184,52 @@ Results:
 - Diff whitespace check: passed; Git emitted only LF-to-CRLF working-copy notices.
 - The sole warning is the installed FastAPI/Starlette/httpx test-client deprecation warning.
 - All new flows use workspace-local migrated databases, explicit mock providers, and local files. No paid provider or real `xhs_workflow.db` was accessed.
+
+## Final revision-concurrency and gate-order fixes
+
+- The idempotency coordinator now accepts an error callback that executes after action rollback but before the shared mutation lock is released. Revision failure uses that callback to atomically persist the failed run state and failed step attempt. A waiting selection or approval cannot observe the old copy-review state between rollback and failure publication.
+- The revision failure transition is conditional on `copy_review_required`. A zero-row transition explicitly accepts `canceled` as the cancellation-wins outcome and raises for any other unexpected state instead of silently losing the failure update.
+- `20260730_0006` adds indexed `run_steps.error_type`. Revision attempts capture their real pre-provider `started_at` and attempt number without taking a database write lock across the provider call. Failure records `completed_at`, heartbeat, duration, error type, and internal error; retry followed by success records the next attempt as completed.
+- Candidate and image publication now use the first conditional update only to acquire/validate the phase state. Internal `candidate_round`/`image_qc` step writes happen next, and the final `copy_review`/`asset_review` run update is flushed last, preventing `record_step` from overwriting the public gate name.
+
+### Final RED and focused evidence
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py -q -k "full_mock_flow or revision_provider_failure or revision_failure_commits" --basetemp=.pytest-tmp/task3-final-red -p no:cacheprovider
+```
+
+Initial result: 2 failed, 1 passed, 21 deselected. The failures proved `current_step = candidate_round` at the copy gate and absence of the failed revision attempt. The concurrency test exercised a provider-blocked revision and a waiting approval.
+
+After implementation and the 0006 migration:
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py tests/test_migrate.py -q -k "full_mock_flow or revision_provider_failure or revision_failure_commits or empty_sqlite" --basetemp=.pytest-tmp/task3-final-green2 -p no:cacheprovider
+```
+
+Result: 4 passed, 27 deselected, 1 upstream warning in 5.82s.
+
+Exact covering tests:
+
+- `test_full_mock_flow_has_two_gates_and_durable_steps`
+- `test_revision_provider_failure_is_durable_atomic_and_retryable`
+- `test_revision_failure_commits_before_waiting_approval_can_transition`
+- `test_empty_sqlite_database_upgrades_to_head`
+
+### Final validation
+
+The host intermittently failed to load `_sqlite3` during pytest plugin initialization while a direct `python -c "import sqlite3"` succeeded. Disabling unrelated third-party pytest plugin autoload produced a clean full application run:
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+python -m pytest -q --basetemp=.pytest-tmp/task3-final-full3 -p no:cacheprovider
+python -m ruff check app tests migrations
+git diff --check
+```
+
+Results:
+
+- Full pytest: 59 passed, 1 warning in 24.98s.
+- Ruff: all checks passed.
+- Diff whitespace check: passed; only LF-to-CRLF notices were emitted.
+- The warning remains the installed FastAPI/Starlette/httpx test-client deprecation warning.
+- All tests used workspace-local temporary migrated databases and mock providers. No paid provider or real `xhs_workflow.db` was accessed.
