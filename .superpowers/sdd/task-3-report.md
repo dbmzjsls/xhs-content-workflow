@@ -79,6 +79,7 @@ The deterministic integration suite covers the complete mock flow and both gates
 - `50fda3e feat: add durable workbench backend` contains the implementation, migration, and tests.
 - The report itself is committed separately after that implementation commit so it can record the implementation hash exactly.
 - `e5dddf8 fix: harden durable backend invariants` resolves all six Important review findings and adds the 0005 migration plus covering regressions.
+- `89f874b fix: close backend publication gaps` removes remaining public path leakage, makes revision failures durable/retryable, and serializes candidate publication against cancellation.
 
 ## Important-review fixes
 
@@ -133,3 +134,52 @@ Results:
 - Diff whitespace check: passed; Git emitted only LF-to-CRLF working-copy notices.
 - The warning remains the installed `fastapi.testclient` Starlette/httpx deprecation warning.
 - Tests used only workspace-local temporary migrated SQLite databases. No paid provider or real `xhs_workflow.db` was used.
+
+## Final blocker fixes
+
+The remaining path, revision-failure, and text-cancellation blockers are resolved:
+
+- Error redaction recognizes Windows drive paths and POSIX absolute paths even when the POSIX path begins inside quotes or adjacent punctuation. Independent Windows-only and POSIX-only tests prevent either branch from masking the other.
+- Image reference records retain internal paths only for owned file access. Prompt construction uses safe labels such as `upload:<asset-id>`, `cover-library:<filename>`, and `product-library:<filename>` and never interpolates `reference["path"]`. Public step payloads remove path fields recursively; image prompts, run detail, exported markdown, package JSON, and ZIP-contained markdown/JSON expose only safe identifiers and owned API URLs.
+- Revision provider exceptions roll back the action transaction, including partial drafts, review rows, and idempotency rows. A separate durable update records `failed`, `draft_revision`, internal error detail, and `failed_phase = revision`; the endpoint returns a fixed 502 response. Retry restores `copy_review_required`, after which the same previously unrecorded idempotency key can perform a successful revision.
+- Candidate generation remains outside database write locks. After provider return, the candidate round, candidate audit step, phase completion/failure, provider metadata, and copy-review/failed state publish in one transaction guarded by `status = running`. Cancellation uses the opposite serialization order to remove candidate drafts and candidate output when it began against a running text phase, preventing a canceled run from exposing a partially or concurrently published candidate round.
+
+### Final blocker RED evidence
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py -q -k "quoted_posix or windows_path_only or upload_backed or revision_provider_failure or between_text_provider" --basetemp=.pytest-tmp/task3-blockers-red -p no:cacheprovider
+```
+
+Result before fixes: 4 failed, 1 passed, 18 deselected. Windows-only redaction already passed; the failures reproduced quoted POSIX leakage, unsafe/missing upload reference labels, an unhandled revision exception, and the missing post-provider text publication boundary.
+
+### Exact final blocker tests
+
+- `test_error_redaction_detects_quoted_posix_path_only`
+- `test_error_redaction_detects_windows_path_only`
+- `test_upload_backed_flow_never_exposes_filesystem_paths`
+- `test_revision_provider_failure_is_durable_atomic_and_retryable`
+- `test_cancel_between_text_provider_and_publish_exposes_no_candidates`
+
+Focused validation:
+
+```powershell
+python -m pytest tests/test_async_workbench_api.py -q -k "quoted_posix or windows_path_only or upload_backed or revision_provider_failure or between_text_provider" --basetemp=.pytest-tmp/task3-blockers-green1 -p no:cacheprovider
+```
+
+Result: 5 passed, 18 deselected, 1 upstream warning in 6.44s.
+
+Final full validation:
+
+```powershell
+python -m pytest -q --basetemp=.pytest-tmp/task3-blockers-full3 -p no:cacheprovider
+python -m ruff check app tests migrations
+git diff --check
+```
+
+Results:
+
+- Full pytest: 58 passed, 1 warning in 19.39s.
+- Ruff: all checks passed.
+- Diff whitespace check: passed; Git emitted only LF-to-CRLF working-copy notices.
+- The sole warning is the installed FastAPI/Starlette/httpx test-client deprecation warning.
+- All new flows use workspace-local migrated databases, explicit mock providers, and local files. No paid provider or real `xhs_workflow.db` was accessed.
