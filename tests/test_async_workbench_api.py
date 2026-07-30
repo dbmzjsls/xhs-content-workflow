@@ -85,6 +85,7 @@ def test_full_mock_flow_has_two_gates_and_durable_steps(tmp_path, monkeypatch):
     assert get_worker().run_once() is True
     text_ready = client.get(f"/api/runs/{created['id']}").json()
     assert text_ready["status"] == "copy_review_required"
+    assert text_ready["current_step"] == "copy_review"
     assert len(text_ready["drafts"]) == 3
     assert not text_ready["images"]
     assert all(step["attempt"] == 1 for step in text_ready["steps"])
@@ -115,6 +116,7 @@ def test_full_mock_flow_has_two_gates_and_durable_steps(tmp_path, monkeypatch):
 
     assets_ready = client.get(f"/api/runs/{created['id']}").json()
     assert assets_ready["status"] == "asset_review_required"
+    assert assets_ready["current_step"] == "asset_review"
     assert assets_ready["images"]
     assert all("file_path" not in item and item["url"] for item in assets_ready["images"])
     asset = client.get(assets_ready["images"][0]["url"])
@@ -698,6 +700,18 @@ def test_revision_provider_failure_is_durable_atomic_and_retryable(tmp_path, mon
         assert session.exec(
             select(ReviewAction).where(ReviewAction.run_id == run["id"])
         ).all() == []
+        failed_steps = session.exec(
+            select(RunStep).where(
+                RunStep.run_id == run["id"], RunStep.name == "draft_revision"
+            )
+        ).all()
+        assert len(failed_steps) == 1
+        assert failed_steps[0].status == "failed"
+        assert failed_steps[0].attempt == 1
+        assert failed_steps[0].started_at and failed_steps[0].completed_at
+        assert failed_steps[0].heartbeat_at and failed_steps[0].duration_ms is not None
+        assert failed_steps[0].error_type == "RuntimeError"
+        assert "revision provider failed" in (failed_steps[0].error or "")
 
     retried = client.post(
         f"/api/runs/{run['id']}/retry", headers=_idempotency("retry-revision")
@@ -711,6 +725,67 @@ def test_revision_provider_failure_is_durable_atomic_and_retryable(tmp_path, mon
         headers=_idempotency("revision-provider-failure"),
     )
     assert succeeded.status_code == 200
+    with Session(get_engine()) as session:
+        attempts = session.exec(
+            select(RunStep)
+            .where(RunStep.run_id == run["id"], RunStep.name == "draft_revision")
+            .order_by(RunStep.attempt)
+        ).all()
+        assert [step.attempt for step in attempts] == [1, 2]
+        assert attempts[1].status == "completed"
+        assert attempts[1].started_at and attempts[1].completed_at
+
+
+def test_revision_failure_commits_before_waiting_approval_can_transition(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    entered = Event()
+    release = Event()
+    approval_started = Event()
+    results = {}
+
+    def blocked_failure(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        raise RuntimeError("blocked revision provider failure")
+
+    monkeypatch.setattr(content_pipeline, "create_revision", blocked_failure)
+
+    def revise_request():
+        results["revision"] = client.post(
+            f"/api/runs/{run['id']}/revisions",
+            json={"instructions": "make it clearer"},
+            headers=_idempotency("blocked-revision"),
+        )
+
+    def approve_request():
+        approval_started.set()
+        results["approval"] = client.post(
+            f"/api/runs/{run['id']}/copy-approval",
+            headers=_idempotency("waiting-approval"),
+        )
+
+    revision_thread = Thread(target=revise_request)
+    approval_thread = Thread(target=approve_request)
+    revision_thread.start()
+    assert entered.wait(5)
+    approval_thread.start()
+    assert approval_started.wait(5)
+    assert approval_thread.is_alive()
+    release.set()
+    revision_thread.join(5)
+    approval_thread.join(5)
+    assert not revision_thread.is_alive() and not approval_thread.is_alive()
+    assert results["revision"].status_code == 502
+    assert results["approval"].status_code == 409
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "failed"
+    assert detail["current_step"] == "draft_revision"
+    with Session(get_engine()) as session:
+        assert len(repo.list_drafts(session, run["id"])) == 3
+        assert repo.get_idempotency(session, "blocked-revision") is None
+        assert repo.get_idempotency(session, "waiting-approval") is None
 
 
 def test_cancel_between_text_provider_and_publish_exposes_no_candidates(tmp_path, monkeypatch):

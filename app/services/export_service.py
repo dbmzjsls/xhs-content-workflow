@@ -59,6 +59,7 @@ def export_package(session: Session, run_id: int, *, commit: bool = True) -> dic
                 "completed_at": step.completed_at.isoformat() if step.completed_at else None,
                 "duration_ms": step.duration_ms,
                 "error": redact_internal_error(step.error),
+                "error_type": step.error_type,
             }
             for step in steps
         ],

@@ -32,7 +32,11 @@ class StateConflict(ValueError):
 
 
 class RevisionProviderFailure(RuntimeError):
-    pass
+    def __init__(self, error: Exception, *, started_at, attempt: int):
+        super().__init__(str(error))
+        self.started_at = started_at
+        self.attempt = attempt
+        self.error_type = type(error).__name__
 
 
 def create_run(session: Session, payload: RunCreate):
@@ -112,12 +116,35 @@ def revise_draft(
     parent = repo.get_selected_or_recommended_draft(session, run_id)
     if parent is None:
         raise ValueError("no draft to revise")
+    started_at = utc_now()
+    attempt = repo.next_step_attempt(session, run_id, "draft_revision")
     try:
         child = content_pipeline.create_revision(
-            session, parent, run.brief, payload.instructions, commit=False
+            session,
+            parent,
+            run.brief,
+            payload.instructions,
+            commit=False,
+            record_step=False,
         )
     except Exception as exc:
-        raise RevisionProviderFailure(str(exc)) from exc
+        raise RevisionProviderFailure(
+            exc, started_at=started_at, attempt=attempt
+        ) from exc
+    repo.record_step(
+        session,
+        run_id,
+        "draft_revision",
+        {"parent_draft_id": parent.id, "instructions": payload.instructions},
+        {"child_draft_id": child.id},
+        status="completed",
+        attempt=attempt,
+        started_at=started_at,
+        commit=False,
+    )
+    repo.update_run(
+        session, run_id, current_step="copy_review", commit=False
+    )
     repo.add_review_action(
         session,
         run_id,
@@ -244,6 +271,7 @@ def idempotent(
     run_id: int,
     payload: dict[str, Any],
     action: Callable[[], dict[str, Any]],
+    error_callback: Callable[[Exception], None] | None = None,
 ) -> dict[str, Any]:
     if key and len(key) > 200:
         raise StateConflict("idempotency key is too long")
@@ -278,8 +306,10 @@ def idempotent(
             if hook is not None:
                 hook(session)
             session.commit()
-        except Exception:
+        except Exception as exc:
             session.rollback()
+            if error_callback is not None:
+                error_callback(exc)
             raise
         if response.get("status") in {"queued", "image_queued"}:
             get_worker().wake()
@@ -306,9 +336,11 @@ def _maybe_commit(session: Session, commit: bool, *, wake: bool = False) -> None
             get_worker().wake()
 
 
-def record_revision_failure(session: Session, run_id: int, error: str) -> None:
+def record_revision_failure(
+    session: Session, run_id: int, failure: RevisionProviderFailure
+) -> None:
     now = utc_now()
-    session.exec(
+    changed = session.exec(
         update(ContentRun)
         .where(
             ContentRun.id == run_id,
@@ -317,9 +349,37 @@ def record_revision_failure(session: Session, run_id: int, error: str) -> None:
         .values(
             status="failed",
             current_step="draft_revision",
-            error=error,
+            error=str(failure),
             failed_phase="revision",
             updated_at=now,
         )
+    )
+    if changed.rowcount != 1:
+        session.rollback()
+        run = repo.get_run(session, run_id)
+        if run is not None and run.status == "canceled":
+            return
+        raise RuntimeError("revision failure could not transition the expected copy-review run")
+    repo.record_step(
+        session,
+        run_id,
+        "draft_revision",
+        {},
+        {},
+        status="failed",
+        attempt=failure.attempt,
+        started_at=failure.started_at,
+        error=str(failure),
+        error_type=failure.error_type,
+        commit=False,
+    )
+    repo.update_run(
+        session,
+        run_id,
+        status="failed",
+        current_step="draft_revision",
+        error=str(failure),
+        failed_phase="revision",
+        commit=False,
     )
     session.commit()

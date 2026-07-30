@@ -91,6 +91,7 @@ def record_step(
     completed_at: datetime | None = None,
     duration_ms: int | None = None,
     error: str | None = None,
+    error_type: str | None = None,
     commit: bool = True,
 ) -> RunStep:
     run = session.get(ContentRun, run_id)
@@ -122,6 +123,7 @@ def record_step(
         completed_at=actual_completed,
         duration_ms=duration_ms,
         error=error,
+        error_type=error_type,
     )
     run.current_step = name
     run.heartbeat_at = now
@@ -347,11 +349,24 @@ def get_idempotency(session: Session, key: str) -> IdempotencyRecord | None:
     return session.exec(select(IdempotencyRecord).where(IdempotencyRecord.key == key)).first()
 
 
+def next_step_attempt(session: Session, run_id: int, name: str) -> int:
+    return int(
+        session.exec(
+            select(func.coalesce(func.max(RunStep.attempt), 0) + 1).where(
+                RunStep.run_id == run_id, RunStep.name == name
+            )
+        ).one()
+        or 1
+    )
+
+
 def start_step(
     session: Session,
     run_id: int,
     name: str,
     input_payload: dict[str, Any],
+    *,
+    commit: bool = True,
 ) -> RunStep:
     now = utc_now()
     attempt = (
@@ -380,8 +395,7 @@ def start_step(
     run.updated_at = now
     session.add(run)
     session.add(step)
-    session.commit()
-    session.refresh(step)
+    _save(session, step, commit=commit)
     return step
 
 
@@ -406,6 +420,7 @@ def finish_step(
     status: str,
     output_payload: dict[str, Any] | None = None,
     error: str | None = None,
+    error_type: str | None = None,
     commit: bool = True,
 ) -> RunStep:
     step = session.get(RunStep, step_id)
@@ -415,6 +430,7 @@ def finish_step(
     step.status = status
     step.output_payload = output_payload or {}
     step.error = error
+    step.error_type = error_type
     step.heartbeat_at = now
     step.completed_at = now
     if step.started_at is not None:

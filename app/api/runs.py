@@ -107,6 +107,10 @@ def revise_draft(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    def record_failure(exc: Exception) -> None:
+        if isinstance(exc, state_service.RevisionProviderFailure):
+            state_service.record_revision_failure(session, run_id, exc)
+
     try:
         return _mutation(
             session,
@@ -117,9 +121,9 @@ def revise_draft(
             action=lambda: state_service.revise_draft(
                 session, run_id, payload, commit=False
             ),
+            error_callback=record_failure,
         )
     except state_service.RevisionProviderFailure as exc:
-        state_service.record_revision_failure(session, run_id, str(exc))
         raise HTTPException(status_code=502, detail="revision provider failed") from exc
 
 
@@ -234,6 +238,7 @@ def _mutation(
     run_id: int,
     payload: dict[str, Any],
     action,
+    error_callback=None,
 ) -> dict[str, Any]:
     try:
         return state_service.idempotent(
@@ -243,6 +248,7 @@ def _mutation(
             run_id=run_id,
             payload=payload,
             action=action,
+            error_callback=error_callback,
         )
     except state_service.StateConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -282,6 +288,7 @@ def _read_run(session: Session, run_id: int) -> RunRead:
                 completed_at=step.completed_at,
                 duration_ms=step.duration_ms,
                 error=redact_internal_error(step.error),
+                error_type=step.error_type,
             )
             for step in repo.list_steps(session, run_id)
         ],

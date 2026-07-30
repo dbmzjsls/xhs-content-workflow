@@ -47,6 +47,7 @@ class RunStep(SQLModel, table=True):
     completed_at: datetime | None = None
     duration_ms: int | None = None
     error: str | None = Field(default=None, sa_column=Column(Text))
+    error_type: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
 
 

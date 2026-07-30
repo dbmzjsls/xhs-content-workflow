@@ -55,6 +55,7 @@ class StepRead(BaseModel):
     completed_at: datetime | None
     duration_ms: int | None
     error: str | None
+    error_type: str | None
 
 
 class DraftRead(BaseModel):

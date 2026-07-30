@@ -262,10 +262,6 @@ def _publish_candidates_atomically(
         update(ContentRun)
         .where(ContentRun.id == run_id, ContentRun.status == "running")
         .values(
-            status="copy_review_required" if eligible else "failed",
-            current_step="copy_review" if eligible else "text_generation",
-            error=error,
-            failed_phase=None if eligible else "text",
             heartbeat_at=now,
             updated_at=now,
         )
@@ -288,6 +284,18 @@ def _publish_candidates_atomically(
         error=error,
         commit=False,
     )
+    repo.update_run(
+        session,
+        run_id,
+        status="copy_review_required" if eligible else "failed",
+        current_step="copy_review" if eligible else "text_generation",
+        error=error,
+        failed_phase=None if eligible else "text",
+        clear_error=eligible,
+        clear_failed_phase=eligible,
+        heartbeat_at=now,
+        commit=False,
+    )
     session.commit()
 
 
@@ -308,10 +316,6 @@ def _publish_images_atomically(
         update(ContentRun)
         .where(ContentRun.id == run_id, ContentRun.status == "image_running")
         .values(
-            status="asset_review_required",
-            current_step="asset_review",
-            error=None,
-            failed_phase=None,
             heartbeat_at=now,
             updated_at=now,
         )
@@ -340,6 +344,16 @@ def _publish_images_atomically(
         phase_step_id,
         status="completed",
         output_payload={"draft_id": draft_id, "asset_count": len(generated)},
+        commit=False,
+    )
+    repo.update_run(
+        session,
+        run_id,
+        status="asset_review_required",
+        current_step="asset_review",
+        clear_error=True,
+        clear_failed_phase=True,
+        heartbeat_at=now,
         commit=False,
     )
     session.commit()
