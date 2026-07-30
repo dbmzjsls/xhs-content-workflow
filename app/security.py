@@ -7,7 +7,9 @@ from fastapi import Header, HTTPException, status
 
 from app.config import get_settings
 
-_ABSOLUTE_PATH = re.compile(r"(?:\b[a-zA-Z]:[\\/]|(?:^|\s)/[^\s])")
+_ABSOLUTE_PATH = re.compile(
+    r"(?:\b[a-zA-Z]:[\\/]|(?<![A-Za-z0-9:])/(?:[^/\s]+/)*[^/\s'\"),;]+)"
+)
 
 
 def require_api_token(

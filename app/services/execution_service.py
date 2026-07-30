@@ -43,24 +43,18 @@ def run_text_phase(session: Session, run_id: int) -> None:
                 session, run_id, "narrative_plan", {"brief": brief, "style_route": route}, plan
             )
 
-        if _completed_output(session, run_id, "candidate_round") is None:
+        result = _completed_output(session, run_id, "candidate_round")
+        persist_round = result is None
+        if result is None:
             _heartbeat(session, run_id, phase_step.id)
             result = content_pipeline.generate_candidate_round(brief)
-            _require_active(session, run_id, "running")
-            content_pipeline.persist_candidate_round(session, run_id, result)
-            if result["recommended_candidate"] is None:
-                raise RuntimeError("candidate round produced no hard-rule-passing draft")
-        eligible = repo.get_selected_or_recommended_draft(session, run_id)
-        if eligible is None or not _is_hard_pass(eligible):
-            raise RuntimeError("candidate round produced no hard-rule-passing draft")
-        _require_active(session, run_id, "running")
-        repo.finish_step(
+        _publish_candidates_atomically(
             session,
+            run_id,
             phase_step.id,
-            status="completed",
-            output_payload={"candidate_count": len(repo.list_drafts(session, run_id))},
+            result,
+            persist_round=persist_round,
         )
-        _advance_text_if_active(session, run_id)
     except ExecutionCanceled:
         session.rollback()
         repo.finish_step(session, phase_step.id, status="failed", error="canceled")
@@ -107,9 +101,11 @@ def run_image_phase(session: Session, run_id: int) -> None:
             for upload in repo.list_uploads(session, run_id):
                 references.append(
                     {
-                        "source": "user_upload",
+                        "source": f"user_upload:{upload.id}",
                         "role": "cover_style",
                         "path": upload.file_path,
+                        "asset_id": upload.id,
+                        "label": f"upload:{upload.id}",
                         "reason": "User-controlled uploaded reference image.",
                     }
                 )
@@ -117,7 +113,14 @@ def run_image_phase(session: Session, run_id: int) -> None:
                 session, run_id, "reference_select", route, {"items": references}
             )
             for reference in references:
-                repo.add_reference(session, run_id, **reference)
+                repo.add_reference(
+                    session,
+                    run_id,
+                    source=reference["source"],
+                    role=reference["role"],
+                    path=reference["path"],
+                    reason=reference["reason"],
+                )
         else:
             references = list(reference_output.get("items", []))
 
@@ -211,10 +214,6 @@ def _require_active(session: Session, run_id: int, expected: str) -> None:
         raise RuntimeError(f"run changed state during execution: {run.status}")
 
 
-def _is_hard_pass(draft) -> bool:
-    return draft.quality_report.get("hard", {}).get("passed") is True
-
-
 def _run_is_canceled(session: Session, run_id: int) -> bool:
     session.expire_all()
     run = repo.get_run(session, run_id)
@@ -240,23 +239,56 @@ def _mark_failed_if_active(
     session.commit()
 
 
-def _advance_text_if_active(session: Session, run_id: int) -> None:
+def _publish_candidates_atomically(
+    session: Session,
+    run_id: int,
+    phase_step_id: int,
+    result: dict[str, Any],
+    *,
+    persist_round: bool,
+) -> None:
+    hook = globals().get("_before_text_publish")
+    if hook is not None:
+        hook(run_id)
+    eligible = any(
+        candidate.get("candidate") == result.get("recommended_candidate")
+        and candidate.get("hard_report", {}).get("passed") is True
+        for candidate in result.get("candidates", [])
+    )
     now = utc_now()
+    error = None if eligible else "candidate round produced no hard-rule-passing draft"
+    session.rollback()
     transitioned = session.exec(
         update(ContentRun)
         .where(ContentRun.id == run_id, ContentRun.status == "running")
         .values(
-            status="copy_review_required",
-            current_step="copy_review",
-            error=None,
-            failed_phase=None,
+            status="copy_review_required" if eligible else "failed",
+            current_step="copy_review" if eligible else "text_generation",
+            error=error,
+            failed_phase=None if eligible else "text",
             heartbeat_at=now,
             updated_at=now,
         )
     )
-    session.commit()
     if transitioned.rowcount != 1:
+        session.rollback()
         raise ExecutionCanceled()
+    if persist_round:
+        content_pipeline.persist_candidate_round(
+            session, run_id, result, commit=False
+        )
+    repo.finish_step(
+        session,
+        phase_step_id,
+        status="completed" if eligible else "failed",
+        output_payload={
+            "candidate_count": len(result.get("candidates", [])),
+            "recommended_candidate": result.get("recommended_candidate"),
+        },
+        error=error,
+        commit=False,
+    )
+    session.commit()
 
 
 def _publish_images_atomically(

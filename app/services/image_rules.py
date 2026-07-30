@@ -48,6 +48,7 @@ def select_references(
             "source": "user",
             "role": "cover_style",
             "path": str(brief["reference_path"]),
+            "label": "user-reference",
             "reason": "用户提供参考图，优先决定封面构图、标题承载和情绪。",
         })
     else:
@@ -60,6 +61,7 @@ def select_references(
                 "source": "cover_library",
                 "role": "cover_style",
                 "path": str(chosen),
+                "label": f"cover-library:{chosen.name}",
                 "reason": f"无用户参考图，按风格「{style}」从不同风格封面库选择封面骨架。",
             })
 
@@ -71,6 +73,7 @@ def select_references(
                 "source": "product_library",
                 "role": "product_ui",
                 "path": str(product_ref),
+                "label": f"product-library:{product_ref.name}",
                 "reason": "当前图片需要产品可信度，补充 Cathoven 真实 UI 素材用于界面结构。",
             })
     return refs
@@ -181,7 +184,8 @@ def _prompt_for(
     references: list[dict[str, Any]],
 ) -> str:
     ref_text = "\n".join(
-        f"- {ref['role']}: {ref['path']} ({ref['reason']})" for ref in references
+        f"- {ref['role']}: {_reference_label(ref)} ({ref['reason']})"
+        for ref in references
     ) or "- No file reference available; follow the encoded Cathoven XHS workflow."
     if task == "封面图":
         return f"""Use case: ads-marketing
@@ -358,3 +362,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in value).strip("-") or "asset"
+
+
+def _reference_label(reference: dict[str, Any]) -> str:
+    label = reference.get("label")
+    if isinstance(label, str) and label:
+        return label
+    return f"{reference.get('source', 'reference')}:{reference.get('role', 'asset')}"

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import zipfile
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 
@@ -21,6 +24,7 @@ from app.models import (
 )
 from app.repositories import runs as repo
 from app.schemas import RunCreate
+from app.security import redact_internal_error
 from app.services import content_pipeline, execution_service, image_rules, state_service
 from app.services.worker import get_worker
 from app.time_utils import utc_now
@@ -33,6 +37,14 @@ def _prepare(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
     monkeypatch.setenv("UPLOAD_ROOT", str(tmp_path / "uploads"))
+    cover_dir = tmp_path / "covers" / "备忘录聊天框风"
+    product_dir = tmp_path / "product" / "screenshots"
+    cover_dir.mkdir(parents=True)
+    product_dir.mkdir(parents=True)
+    (cover_dir / "cover.png").write_bytes(PNG)
+    (product_dir / "ui.png").write_bytes(PNG)
+    monkeypatch.setenv("CATHOVEN_COVER_REFERENCE_DIR", str(tmp_path / "covers"))
+    monkeypatch.setenv("CATHOVEN_PRODUCT_REFERENCE_DIR", str(tmp_path / "product"))
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("IMAGE_PROVIDER", "mock")
     monkeypatch.setenv("WORKER_ENABLED", "false")
@@ -602,3 +614,128 @@ def test_api_redacts_absolute_paths_from_run_and_step_errors(tmp_path, monkeypat
     assert "/srv/private" not in listed["error"]
     with Session(get_engine()) as session:
         assert internal in session.get(ContentRun, run["id"]).error
+
+
+def test_error_redaction_detects_quoted_posix_path_only():
+    value = "failed opening '/srv/private/key.json', retry later"
+    redacted = redact_internal_error(value)
+    assert redacted is not None
+    assert "/srv/private" not in redacted
+
+
+def test_error_redaction_detects_windows_path_only():
+    value = r"failed opening C:\private\secret.png"
+    redacted = redact_internal_error(value)
+    assert redacted is not None
+    assert r"C:\private" not in redacted
+
+
+def test_upload_backed_flow_never_exposes_filesystem_paths(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    uploaded = client.post(
+        "/api/uploads", files={"file": ("reference.png", PNG, "image/png")}
+    ).json()
+    run = _create(client, upload_asset_ids=[uploaded["id"]])
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+    get_worker().run_once()
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    public_run = json.dumps(detail, ensure_ascii=False)
+    assert f"upload:{uploaded['id']}" in public_run
+    assert f"/api/runs/{run['id']}/assets/" in public_run
+
+    approved = client.post(f"/api/runs/{run['id']}/asset-approval").json()
+    markdown = client.get(approved["final_package"]["markdown_url"]).text
+    package_json = client.get(approved["final_package"]["json_url"]).text
+    archive = client.get(approved["final_package"]["zip_url"]).content
+    with zipfile.ZipFile(BytesIO(archive)) as bundle:
+        zip_markdown = bundle.read("发布包.md").decode("utf-8")
+        zip_json = bundle.read("package.json").decode("utf-8")
+
+    with Session(get_engine()) as session:
+        stored_upload = session.get(UploadAsset, uploaded["id"])
+        absolute_upload = stored_upload.file_path
+    forbidden = {
+        str(tmp_path),
+        tmp_path.as_posix(),
+        absolute_upload,
+        absolute_upload.replace("\\", "\\\\"),
+    }
+    for public_content in (public_run, markdown, package_json, zip_markdown, zip_json):
+        assert all(path not in public_content for path in forbidden)
+    assert f"upload:{uploaded['id']}" in markdown
+    assert f"/api/runs/{run['id']}/assets/" in package_json
+
+
+def test_revision_provider_failure_is_durable_atomic_and_retryable(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    before = client.get(f"/api/runs/{run['id']}").json()
+    draft_ids = [draft["id"] for draft in before["drafts"]]
+    original = content_pipeline.create_revision
+
+    def failing_revision(*args, **kwargs):
+        raise RuntimeError(r"revision provider failed at C:\private\revision.json")
+
+    monkeypatch.setattr(content_pipeline, "create_revision", failing_revision)
+    failed = client.post(
+        f"/api/runs/{run['id']}/revisions",
+        json={"instructions": "make it clearer"},
+        headers=_idempotency("revision-provider-failure"),
+    )
+    assert failed.status_code == 502
+    assert failed.json() == {"detail": "revision provider failed"}
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "failed"
+    assert "C:\\private" not in detail["error"]
+    with Session(get_engine()) as session:
+        stored = session.get(ContentRun, run["id"])
+        assert r"C:\private\revision.json" in stored.error
+        assert stored.failed_phase == "revision"
+        assert [draft.id for draft in repo.list_drafts(session, run["id"])] == draft_ids
+        assert repo.get_idempotency(session, "revision-provider-failure") is None
+        assert session.exec(
+            select(ReviewAction).where(ReviewAction.run_id == run["id"])
+        ).all() == []
+
+    retried = client.post(
+        f"/api/runs/{run['id']}/retry", headers=_idempotency("retry-revision")
+    )
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "copy_review_required"
+    monkeypatch.setattr(content_pipeline, "create_revision", original)
+    succeeded = client.post(
+        f"/api/runs/{run['id']}/revisions",
+        json={"instructions": "make it clearer"},
+        headers=_idempotency("revision-provider-failure"),
+    )
+    assert succeeded.status_code == 200
+
+
+def test_cancel_between_text_provider_and_publish_exposes_no_candidates(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    original = content_pipeline.generate_candidate_round
+    publish_entered = Event()
+    publish_release = Event()
+
+    def pause_before_publish(run_id):
+        publish_entered.set()
+        assert publish_release.wait(5)
+
+    monkeypatch.setattr(
+        execution_service, "_before_text_publish", pause_before_publish, raising=False
+    )
+    monkeypatch.setattr(content_pipeline, "generate_candidate_round", original)
+    thread = Thread(target=get_worker().run_once)
+    thread.start()
+    assert publish_entered.wait(5)
+    assert client.post(f"/api/runs/{run['id']}/cancel").status_code == 200
+    publish_release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "canceled"
+    assert detail["drafts"] == []
+    assert not any(step["name"] == "candidate_round" for step in detail["steps"])

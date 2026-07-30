@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import delete, update
 from sqlmodel import Session, select
 
-from app.models import Draft, IdempotencyRecord, ImageAsset, UploadAsset
+from app.models import ContentRun, Draft, IdempotencyRecord, ImageAsset, RunStep, UploadAsset
 from app.repositories import runs as repo
 from app.schemas import DraftRevision, DraftSelection, RunCreate
 from app.services import content_pipeline, export_service
@@ -28,6 +28,10 @@ _idempotency_lock = Lock()
 
 
 class StateConflict(ValueError):
+    pass
+
+
+class RevisionProviderFailure(RuntimeError):
     pass
 
 
@@ -108,9 +112,12 @@ def revise_draft(
     parent = repo.get_selected_or_recommended_draft(session, run_id)
     if parent is None:
         raise ValueError("no draft to revise")
-    child = content_pipeline.create_revision(
-        session, parent, run.brief, payload.instructions, commit=False
-    )
+    try:
+        child = content_pipeline.create_revision(
+            session, parent, run.brief, payload.instructions, commit=False
+        )
+    except Exception as exc:
+        raise RevisionProviderFailure(str(exc)) from exc
     repo.add_review_action(
         session,
         run_id,
@@ -170,6 +177,8 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
         status = "queued"
     elif run.failed_phase == "image":
         status = "image_queued"
+    elif run.failed_phase == "revision":
+        status = "copy_review_required"
     else:
         raise StateConflict("failed run has no recoverable phase")
     repo.update_run(
@@ -178,6 +187,7 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
         status=status,
         current_step=status,
         clear_error=True,
+        clear_failed_phase=run.failed_phase == "revision",
         commit=False,
     )
     _maybe_commit(session, commit, wake=True)
@@ -190,6 +200,7 @@ def cancel(session: Session, run_id: int, *, commit: bool = True) -> dict[str, A
         raise ValueError("run not found")
     if run.status not in ACTIVE_STATUSES:
         raise StateConflict(f"cannot cancel run from {run.status}")
+    canceling_text_execution = run.status == "running"
     repo.update_run(
         session,
         run_id,
@@ -198,6 +209,29 @@ def cancel(session: Session, run_id: int, *, commit: bool = True) -> dict[str, A
         commit=False,
     )
     session.exec(delete(ImageAsset).where(ImageAsset.run_id == run_id))
+    if canceling_text_execution:
+        now = utc_now()
+        session.exec(delete(Draft).where(Draft.run_id == run_id))
+        session.exec(
+            delete(RunStep).where(
+                RunStep.run_id == run_id, RunStep.name == "candidate_round"
+            )
+        )
+        session.exec(
+            update(RunStep)
+            .where(
+                RunStep.run_id == run_id,
+                RunStep.name == "text_generation",
+                RunStep.status == "running",
+            )
+            .values(
+                status="failed",
+                output_payload={},
+                error="canceled",
+                heartbeat_at=now,
+                completed_at=now,
+            )
+        )
     _maybe_commit(session, commit)
     return {"run_id": run_id, "status": "canceled"}
 
@@ -270,3 +304,22 @@ def _maybe_commit(session: Session, commit: bool, *, wake: bool = False) -> None
         session.commit()
         if wake:
             get_worker().wake()
+
+
+def record_revision_failure(session: Session, run_id: int, error: str) -> None:
+    now = utc_now()
+    session.exec(
+        update(ContentRun)
+        .where(
+            ContentRun.id == run_id,
+            ContentRun.status == "copy_review_required",
+        )
+        .values(
+            status="failed",
+            current_step="draft_revision",
+            error=error,
+            failed_phase="revision",
+            updated_at=now,
+        )
+    )
+    session.commit()

@@ -107,14 +107,20 @@ def revise_draft(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    return _mutation(
-        session,
-        key=idempotency_key,
-        scope="revision",
-        run_id=run_id,
-        payload=payload.model_dump(),
-        action=lambda: state_service.revise_draft(session, run_id, payload, commit=False),
-    )
+    try:
+        return _mutation(
+            session,
+            key=idempotency_key,
+            scope="revision",
+            run_id=run_id,
+            payload=payload.model_dump(),
+            action=lambda: state_service.revise_draft(
+                session, run_id, payload, commit=False
+            ),
+        )
+    except state_service.RevisionProviderFailure as exc:
+        state_service.record_revision_failure(session, run_id, str(exc))
+        raise HTTPException(status_code=502, detail="revision provider failed") from exc
 
 
 @router.post("/{run_id}/copy-approval")

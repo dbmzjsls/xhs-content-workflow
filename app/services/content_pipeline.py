@@ -421,7 +421,14 @@ def generate_candidate_round(
     }
 
 
-def persist_candidate_round(session: Session, run_id: int, result: dict[str, Any], *, round_number: int = 1) -> list[Draft]:
+def persist_candidate_round(
+    session: Session,
+    run_id: int,
+    result: dict[str, Any],
+    *,
+    round_number: int = 1,
+    commit: bool = True,
+) -> list[Draft]:
     """Persist all three candidates and an auditable selection decision."""
     drafts = []
     for candidate in result["candidates"]:
@@ -435,10 +442,24 @@ def persist_candidate_round(session: Session, run_id: int, result: dict[str, Any
                 quality_report={"hard": candidate["hard_report"], "soft": candidate["score_report"]},
                 round=round_number, candidate=candidate["candidate"], angle=candidate["angle"],
                 source=candidate["source"], score=candidate["score"], selected=candidate["recommended"],
+                commit=commit,
             )
         )
-    repo.record_step(session, run_id, "candidate_round", {"round": round_number}, result)
-    repo.update_run(session, run_id, provider=result["provider"], model=result["model"])
+    repo.record_step(
+        session,
+        run_id,
+        "candidate_round",
+        {"round": round_number},
+        result,
+        commit=commit,
+    )
+    repo.update_run(
+        session,
+        run_id,
+        provider=result["provider"],
+        model=result["model"],
+        commit=commit,
+    )
     return drafts
 
 
