@@ -8,23 +8,25 @@ Branch: `xhs-workbench-v1`
 All four final-review blockers are fixed with regression coverage.
 
 1. Legacy compatibility
-   - Added forward-only head migration `20260731_0007` without modifying 0003-0006.
+   - Added forward migrations `20260731_0007` and `20260731_0008` without rewriting committed migrations.
    - Normalizes model-required legacy NULL JSON/text fields and makes those columns non-null.
    - Recomputes a deterministic current `hard` report for every existing draft while retaining prior quality evidence under `legacy_quality_report`.
-   - Selects the latest `(version, id)` draft only for review/asset-review runs that have no selection.
-   - Migration coverage starts with realistic 0002 `review_required` rows, NULL payloads, two draft versions, and NULL image fields; after upgrade it verifies GET detail, selection, revision, and copy approval.
+   - Preserves an explicitly selected hard-passing draft; otherwise selects the latest hard-passing `(version, id)` draft. A newer hard-failing draft is never selected over an eligible draft.
+   - When a legacy review/asset-review run has no hard-passing draft, 0008 reconstructs its brief from preserved run columns, clears unsafe selection, invalidates cached candidate output, and moves it to recoverable `failed/text` state.
+   - Migration coverage starts with realistic 0002 `review_required` rows, NULL payloads, mixed valid/invalid draft versions, and NULL image fields; after upgrade it verifies GET detail, selection, revision, and copy approval.
+   - A separate invalid-only legacy regression verifies public GET, POST `/retry`, fresh mock text generation, restored copy review, and legal copy approval rather than leaving cancellation as the only transition.
 
 2. Public path boundary and legacy exports
    - Public serialization recursively sanitizes absolute Windows drive, Windows UNC, and POSIX paths from arbitrary strings, including draft/image fields and image prompts/reference reasons.
    - `final_package` is now an exact allowlist of run-owned export URLs.
    - Export markdown/JSON/ZIP content uses the same sanitizer.
-   - Migration preserves every old package descriptor privately in `legacy_final_package`, clears its public descriptor, and returns completed legacy runs to asset review. Existing files are left untouched but all legacy download endpoints return 409 until a safe re-export.
+   - Migration preserves every old package descriptor privately in `legacy_final_package` and clears its public descriptor. Completed legacy runs with eligible drafts return to asset review; runs without an eligible draft enter recoverable text retry. Existing files are left untouched and all legacy download endpoints return 409 until a safe re-export.
 
 3. Revision UI consistency
    - Parent drafts and child revisions are all rendered in the tab list; children are explicitly labeled `Revision`.
    - Visible draft state is controlled by `App`.
-   - Copy approval is disabled unless the visible draft is the backend-selected draft, with a handler guard as a second boundary.
-   - The Playwright flow now verifies revision visibility plus approval disabled/enabled behavior when switching away from/back to the selected revision.
+   - Both revision and copy approval are disabled unless the visible draft is the backend-selected draft, with handler guards as a second boundary.
+   - The Playwright flow now verifies revision visibility plus revision/approval disabled/enabled behavior when switching away from/back to the selected revision.
    - An offline source contract test covers the wiring.
 
 4. Missing generated files
@@ -34,9 +36,10 @@ All four final-review blockers are fixed with regression coverage.
 
 ## Verification evidence
 
-- Focused review regressions: `13 passed, 1 warning`.
-- Migration suite after realistic `review_required` adjustment: `9 passed, 1 warning`.
-- Full backend suite with no pytest cache and a workspace-local OS temp/basetemp root: `73 passed, 1 warning in 28.52s`.
+- Initial focused review regressions: `13 passed, 1 warning`.
+- Follow-up migration and frontend contract suite: `11 passed, 1 warning`.
+- Migration suite includes 10 tests, including mixed-validity and invalid-only public retry coverage.
+- Full backend suite with no pytest cache and a workspace-local OS temp/basetemp root: `74 passed, 1 warning in 36.28s`.
 - Ruff: `All checks passed!` for `app migrations tests`.
 - Frontend production build: TypeScript + Vite succeeded; 1572 modules transformed.
 - Diff whitespace check: `git diff --check` passed.

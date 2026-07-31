@@ -15,7 +15,10 @@ def test_revision_tabs_and_visible_selected_approval_contract_are_wired():
     assert "Revision" in preview
     assert "visibleDraftId" in app
     assert "visibleDraftId === selected?.id" in app
-    assert "copyApprovalEnabled" in review
-    assert "disabled={busy || !copyApprovalEnabled}" in review
+    assert "reviewActionsEnabled" in review
+    assert "disabled={busy || !instructions.trim() || !reviewActionsEnabled}" in review
+    assert "disabled={busy || !reviewActionsEnabled}" in review
+    assert "if (run && visibleDraftId === selected?.id) await api.revise" in app
     assert "revision-tab-" in e2e
     assert "toBeDisabled" in e2e
+    assert "getByTestId('revise-draft')).toBeDisabled" in e2e

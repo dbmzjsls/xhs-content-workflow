@@ -58,7 +58,7 @@ export function App() {
   useEffect(() => {
     setVisibleDraftId(selected?.id ?? run?.drafts[0]?.id)
   }, [run?.id, selected?.id])
-  const copyApprovalEnabled = visibleDraftId === selected?.id
+  const reviewActionsEnabled = visibleDraftId === selected?.id
   const select = async (draft: Draft) => runAction(async () => { if (run) await api.selectDraft(run.id, draft.id) })
 
   return <main>
@@ -72,6 +72,6 @@ export function App() {
       {run && imagePanelVisible(run) && <ImageAssets images={run.images} />}
     </div>
     {selected && run?.status === 'copy_review_required' && <p className="selection-note">当前选择：方案 {selected.candidate}。可提交修改意见，或通过文案进入图片生成。</p>}
-    <ReviewBar run={run} busy={busy} copyApprovalEnabled={copyApprovalEnabled} onRevise={(instructions) => runAction(async () => { if (run) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />
+    <ReviewBar run={run} busy={busy} reviewActionsEnabled={reviewActionsEnabled} onRevise={(instructions) => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />
   </main>
 }

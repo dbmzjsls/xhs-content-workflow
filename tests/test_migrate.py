@@ -75,7 +75,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path):
     assert {"alembic_version", "content_runs", "upload_assets", "idempotency_records"} <= tables
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260731_0007",
+            "20260731_0008",
         )
         assert {
             "workflow_name",
@@ -149,7 +149,7 @@ def test_legacy_database_is_backed_up_and_rows_are_preserved(tmp_path: Path):
             "legacy title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260731_0007",
+            "20260731_0008",
         )
 
 
@@ -218,14 +218,14 @@ def test_versioned_database_upgrades_from_0002_to_head_preserving_rows(tmp_path:
         assert connection.execute("SELECT topic FROM content_runs WHERE id = 1").fetchone() == (
             "versioned topic",
         )
-        assert connection.execute("SELECT status FROM content_runs WHERE id = 1").fetchone() == (
-            "copy_review_required",
-        )
+        assert connection.execute(
+            "SELECT status, failed_phase FROM content_runs WHERE id = 1"
+        ).fetchone() == ("failed", "text")
         assert connection.execute("SELECT title FROM drafts WHERE id = 1").fetchone() == (
             "versioned title",
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260731_0007",
+            "20260731_0008",
         )
 
 
@@ -294,6 +294,15 @@ def test_0007_normalizes_legacy_review_rows_and_allows_legal_continuation(
         )
         connection.execute(
             """
+            INSERT INTO drafts (
+                run_id, version, title, body, tags, narrative_plan, quality_report,
+                is_final, created_at
+            ) VALUES (1, 3, 'latest invalid', 'too short', NULL, NULL, NULL, 0,
+                      '2026-01-03 00:00:00')
+            """
+        )
+        connection.execute(
+            """
             INSERT INTO image_assets (
                 run_id, kind, status, title, prompt, reference_reason, file_path,
                 qc_report, created_at
@@ -313,7 +322,12 @@ def test_0007_normalizes_legacy_review_rows_and_allows_legal_continuation(
             "SELECT * FROM drafts WHERE run_id = 1 ORDER BY version"
         ).fetchall()
         image = connection.execute("SELECT * FROM image_assets WHERE run_id = 1").fetchone()
-        assert json.loads(run["brief"]) == {}
+        assert json.loads(run["brief"]) == {
+            "topic": "topic",
+            "audience": "audience",
+            "product_function": "Writing Checker",
+            "pain_point": "pain",
+        }
         assert json.loads(step["input_payload"]) == {}
         assert json.loads(step["output_payload"]) == {}
         assert drafts[0]["body"] == ""
@@ -321,10 +335,10 @@ def test_0007_normalizes_legacy_review_rows_and_allows_legal_continuation(
         assert json.loads(drafts[0]["narrative_plan"]) == {}
         assert isinstance(json.loads(drafts[0]["quality_report"])["hard"]["passed"], bool)
         assert json.loads(drafts[1]["quality_report"])["hard"]["passed"] is True
-        assert [row["selected"] for row in drafts] == [0, 1]
+        assert [row["selected"] for row in drafts] == [0, 1, 0]
         assert image["prompt"] == image["reference_reason"] == ""
         assert json.loads(image["qc_report"]) == {}
-        assert connection.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM image_assets").fetchone()[0] == 1
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database.as_posix()}")
@@ -382,7 +396,7 @@ def test_0007_preserves_but_invalidates_legacy_export_artifacts(tmp_path: Path, 
             "SELECT status, current_step, final_package, legacy_final_package "
             "FROM content_runs WHERE id = 7"
         ).fetchone()
-    assert row[:3] == ("asset_review_required", "asset_review", None)
+    assert row[:3] == ("failed", "text_generation", None)
     assert json.loads(row[3]) == {"zip_path": r"C:\private\发布包.zip"}
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database.as_posix()}")
@@ -399,6 +413,91 @@ def test_0007_preserves_but_invalidates_legacy_export_artifacts(tmp_path: Path, 
     assert client.get("/api/runs/7/exports/json").status_code == 409
     assert (run_root / "package.json").read_text("utf-8") == unsafe
     assert (run_root / "发布包.zip").read_bytes() == unsafe.encode()
+
+
+def test_invalid_only_legacy_review_run_migrates_to_publicly_retryable_text_phase(
+    tmp_path: Path, monkeypatch
+):
+    database = tmp_path / "invalid-legacy-review.db"
+    _upgrade_to_revision(database, "20260706_0002")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO content_runs (
+                id, status, current_step, topic, audience, product_function,
+                pain_point, style_preference, brief, created_at, updated_at
+            ) VALUES (9, 'review_required', 'review', 'retry topic', 'retry audience',
+                      'Writing Checker', 'retry pain', 'memoir', NULL,
+                      '2026-01-01 00:00:00', '2026-01-01 00:00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO run_steps (
+                run_id, name, status, input_payload, output_payload, created_at
+            ) VALUES (9, 'candidate_round', 'completed', NULL, NULL,
+                      '2026-01-01 00:00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO drafts (
+                run_id, version, title, body, tags, narrative_plan, quality_report,
+                is_final, created_at
+            ) VALUES (9, 1, 'invalid legacy', 'too short', NULL, NULL, NULL,
+                      0, '2026-01-01 00:00:00')
+            """
+        )
+        connection.commit()
+
+    migrate_database(f"sqlite:///{database.as_posix()}")
+
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        run = connection.execute("SELECT * FROM content_runs WHERE id = 9").fetchone()
+        draft = connection.execute("SELECT * FROM drafts WHERE run_id = 9").fetchone()
+        cached = connection.execute(
+            "SELECT * FROM run_steps WHERE run_id = 9 AND name = 'candidate_round'"
+        ).fetchone()
+        assert run["status"] == "failed"
+        assert run["current_step"] == "text_generation"
+        assert run["failed_phase"] == "text"
+        assert json.loads(run["brief"]) == {
+            "topic": "retry topic",
+            "audience": "retry audience",
+            "product_function": "Writing Checker",
+            "pain_point": "retry pain",
+            "style_preference": "memoir",
+        }
+        assert draft["selected"] == 0
+        assert json.loads(draft["quality_report"])["hard"]["passed"] is False
+        assert cached["status"] == "failed"
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database.as_posix()}")
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
+    monkeypatch.setenv("UPLOAD_ROOT", str(tmp_path / "uploads"))
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("IMAGE_PROVIDER", "mock")
+    monkeypatch.setenv("WORKER_ENABLED", "false")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    get_settings.cache_clear()
+    reset_engine_for_tests(f"sqlite:///{database.as_posix()}")
+    get_worker().reset_for_tests()
+    client = TestClient(app)
+
+    detail = client.get("/api/runs/9")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["status"] == "failed"
+    retried = client.post("/api/runs/9/retry")
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["status"] == "queued"
+    assert get_worker().run_once() is True
+    recovered = client.get("/api/runs/9").json()
+    assert recovered["status"] == "copy_review_required"
+    assert any(draft["selected"] for draft in recovered["drafts"])
+    approved = client.post("/api/runs/9/copy-approval")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "image_queued"
 
 
 def test_legacy_duplicate_drafts_abort_before_backup_or_schema_change(tmp_path: Path):

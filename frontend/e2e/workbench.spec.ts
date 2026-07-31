@@ -62,8 +62,10 @@ test('complete mock workflow from Brief and upload through export', async ({ pag
   await expect(revisionTab).toBeVisible()
   await expect(revisionTab).toHaveClass(/active/)
   await page.getByTestId('candidate-tab-2').click()
+  await expect(page.getByTestId('revise-draft')).toBeDisabled()
   await expect(page.getByTestId('approve-copy')).toBeDisabled()
   await revisionTab.click()
+  await expect(page.getByTestId('revise-draft')).toBeEnabled()
   await expect(page.getByTestId('approve-copy')).toBeEnabled()
 
   await page.getByTestId('approve-copy').click()
