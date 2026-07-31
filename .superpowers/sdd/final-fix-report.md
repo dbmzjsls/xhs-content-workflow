@@ -8,13 +8,15 @@ Branch: `xhs-workbench-v1`
 All four final-review blockers are fixed with regression coverage.
 
 1. Legacy compatibility
-   - Added forward migrations `20260731_0007` and `20260731_0008` without rewriting committed migrations.
+   - Added forward migrations `20260731_0007`, `20260731_0008`, and `20260731_0009` without rewriting committed migrations.
    - Normalizes model-required legacy NULL JSON/text fields and makes those columns non-null.
    - Recomputes a deterministic current `hard` report for every existing draft while retaining prior quality evidence under `legacy_quality_report`.
    - Preserves an explicitly selected hard-passing draft; otherwise selects the latest hard-passing `(version, id)` draft. A newer hard-failing draft is never selected over an eligible draft.
    - When a legacy review/asset-review run has no hard-passing draft, 0008 reconstructs its brief from preserved run columns, clears unsafe selection, invalidates cached candidate output, and moves it to recoverable `failed/text` state.
+   - 0009 clears stale `image_assets`, public package state, and selected/final flags for those ineligible runs. It marks old prompt/image-generation/QC/phase successes failed so image execution cannot reuse data derived from the old draft. Source image files stay on disk.
    - Migration coverage starts with realistic 0002 `review_required` rows, NULL payloads, mixed valid/invalid draft versions, and NULL image fields; after upgrade it verifies GET detail, selection, revision, and copy approval.
    - A separate invalid-only legacy regression verifies public GET, POST `/retry`, fresh mock text generation, restored copy review, and legal copy approval rather than leaving cancellation as the only transition.
+   - A full stale-image regression continues through new copy approval, mock image generation, asset approval, JSON/ZIP export, and proves the new selected draft/new images are exported while the old image is excluded. A paired eligible asset-review run remains untouched and exports successfully.
 
 2. Public path boundary and legacy exports
    - Public serialization recursively sanitizes absolute Windows drive, Windows UNC, and POSIX paths from arbitrary strings, including draft/image fields and image prompts/reference reasons.
@@ -38,8 +40,8 @@ All four final-review blockers are fixed with regression coverage.
 
 - Initial focused review regressions: `13 passed, 1 warning`.
 - Follow-up migration and frontend contract suite: `11 passed, 1 warning`.
-- Migration suite includes 10 tests, including mixed-validity and invalid-only public retry coverage.
-- Full backend suite with no pytest cache and a workspace-local OS temp/basetemp root: `74 passed, 1 warning in 36.28s`.
+- Final migration suite: `11 passed, 1 warning`, including mixed-validity, invalid-only public retry, stale image cache cleanup, new export, and eligible asset-review coverage.
+- Full backend suite with no pytest cache and a workspace-local OS temp/basetemp root: `75 passed, 1 warning in 35.68s`.
 - Ruff: `All checks passed!` for `app migrations tests`.
 - Frontend production build: TypeScript + Vite succeeded; 1572 modules transformed.
 - Diff whitespace check: `git diff --check` passed.
