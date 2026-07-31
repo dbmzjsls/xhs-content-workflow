@@ -212,7 +212,7 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
         session,
         run_id,
         status=status,
-        current_step=status,
+        current_step="copy_review" if run.failed_phase == "revision" else status,
         clear_error=True,
         clear_failed_phase=run.failed_phase == "revision",
         commit=False,

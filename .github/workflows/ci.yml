@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LLM_PROVIDER: mock
+      IMAGE_PROVIDER: mock
+      DATABASE_URL: sqlite:///${{ runner.temp }}/empty-migration.sqlite
+      EXPORT_DIR: ${{ runner.temp }}/exports
+      UPLOAD_ROOT: ${{ runner.temp }}/uploads
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Upgrade an empty SQLite database
+        run: uv run python -m app.migrate
+
+      - name: Ruff
+        run: uv run ruff check app tests migrations scripts
+
+      - name: Pytest
+        run: uv run python -m pytest -q -p no:cacheprovider
+
+      - name: Deterministic Brief hard-rule evaluation
+        run: uv run python -m app.evals.briefs mock-hard
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright main flow
+        working-directory: frontend
+        run: npm run test:e2e
+

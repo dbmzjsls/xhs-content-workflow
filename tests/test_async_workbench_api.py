@@ -718,6 +718,8 @@ def test_revision_provider_failure_is_durable_atomic_and_retryable(tmp_path, mon
     )
     assert retried.status_code == 200
     assert retried.json()["status"] == "copy_review_required"
+    retried_detail = client.get(f"/api/runs/{run['id']}").json()
+    assert retried_detail["current_step"] == "copy_review"
     monkeypatch.setattr(content_pipeline, "create_revision", original)
     succeeded = client.post(
         f"/api/runs/{run['id']}/revisions",

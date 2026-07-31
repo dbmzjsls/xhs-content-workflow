@@ -13,6 +13,7 @@ const imageVisibleStates = new Set(['image_queued', 'image_running', 'asset_revi
 const label: Record<string, string> = { queued: '排队中', running: '文案生成中', copy_review_required: '等待文案审核', image_queued: '图片排队中', image_running: '图片生成中', asset_review_required: '等待资产审核', completed: '已完成', failed: '失败', canceled: '已取消' }
 
 function displayError(error: unknown) { return error instanceof Error ? error.message : String(error) }
+function imagePanelVisible(run: Run) { return imageVisibleStates.has(run.status) || (run.status === 'failed' && run.current_step === 'image_generation') }
 
 export function App() {
   const [brief, setBrief] = useState<RunCreate>(initialBrief)
@@ -63,7 +64,7 @@ export function App() {
       <section className="panel history-panel"><div className="panel-title"><RefreshCw size={18} /><span>运行历史</span></div>{history.length === 0 ? <div className="empty-line">暂无历史运行</div> : <ul>{history.map((item) => <li key={item.id}><button type="button" className={run?.id === item.id ? 'active' : ''} onClick={() => { setError(undefined); void refresh(item.id).catch((event) => setError(displayError(event))) }}><b>#{item.id} {item.topic}</b><span className={`run-status ${item.status}`}>{label[item.status] ?? item.status}</span><small>{new Date(item.updated_at).toLocaleString()}</small></button></li>)}</ul>}</section>
       <StepTimeline steps={run?.steps ?? []} currentStep={run?.current_step} />
       <DraftPreview drafts={run?.drafts ?? []} steps={run?.steps ?? []} canSelect={run?.status === 'copy_review_required'} onSelect={select} />
-      {run && imageVisibleStates.has(run.status) && <ImageAssets images={run.images} />}
+      {run && imagePanelVisible(run) && <ImageAssets images={run.images} />}
     </div>
     {selected && run?.status === 'copy_review_required' && <p className="selection-note">当前选择：方案 {selected.candidate}。可提交修改意见，或通过文案进入图片生成。</p>}
     <ReviewBar run={run} busy={busy} onRevise={(instructions) => runAction(async () => { if (run) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />

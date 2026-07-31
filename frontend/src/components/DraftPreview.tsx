@@ -28,7 +28,7 @@ export function DraftPreview({ drafts, steps, canSelect, onSelect }: { drafts: D
   return <section className="panel draft-panel">
     <div className="panel-title"><FileText size={18} /><span>文案候选 · 复制审核</span></div>
     <div className="candidate-tabs" role="tablist" aria-label="文案候选">
-      {candidates.map((item) => <button key={item.id} type="button" className={item.id === draft.id ? 'active' : ''} onClick={() => setActiveId(item.id)}>方案 {item.candidate}{item.selected && ' · 已选'}</button>)}
+      {candidates.map((item) => <button data-testid={`candidate-tab-${item.candidate}`} key={item.id} type="button" className={item.id === draft.id ? 'active' : ''} onClick={() => setActiveId(item.id)}>方案 {item.candidate}{item.selected && ' · 已选'}</button>)}
     </div>
     <div className="candidate-meta">
       <span>角度：{meta?.angle ?? (draft.narrative_plan.angle as string | undefined) ?? '内容候选'}</span>
@@ -39,6 +39,6 @@ export function DraftPreview({ drafts, steps, canSelect, onSelect }: { drafts: D
     <div className="note-preview"><h2>{draft.title}</h2><p>{draft.body}</p><div className="tags">{draft.tags.map((tag) => <span key={tag}>{tag}</span>)}</div></div>
     <div className="first-comment"><b>首评</b><span>{draft.first_comment ?? '—'}</span></div>
     <div className="qc-block"><div className={hard?.passed ? 'qc-pass' : 'qc-warn'}><ClipboardCheck size={16} /><span>{hard?.passed ? '可选择并提交审核' : '该方案不可选择'}</span></div>{hard?.issues?.length ? <ul>{hard.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}</div>
-    {canSelect && <button type="button" className="select-candidate" disabled={!hard?.passed || draft.selected} onClick={() => void onSelect(draft)}>{draft.selected ? '当前已选方案' : '选择此方案'}</button>}
+    {canSelect && <button data-testid="select-candidate" type="button" className="select-candidate" disabled={!hard?.passed || draft.selected} onClick={() => void onSelect(draft)}>{draft.selected ? '当前已选方案' : '选择此方案'}</button>}
   </section>
 }
