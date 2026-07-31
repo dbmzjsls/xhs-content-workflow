@@ -632,6 +632,143 @@ def test_error_redaction_detects_windows_path_only():
     assert r"C:\private" not in redacted
 
 
+def test_error_redaction_detects_windows_unc_path():
+    value = r"failed opening \\fileserver\private\secret.png"
+    redacted = redact_internal_error(value)
+    assert redacted is not None
+    assert r"\\fileserver\private" not in redacted
+
+
+def test_run_detail_sanitizes_paths_in_arbitrary_strings_and_only_exposes_owned_urls(
+    tmp_path, monkeypatch
+):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+    get_worker().run_once()
+    owned_zip = f"/api/runs/{run['id']}/exports/zip"
+    with Session(get_engine()) as session:
+        stored = session.get(ContentRun, run["id"])
+        stored.topic = r"topic loaded from C:\private\brief.json"
+        stored.brief = {"note": "source /srv/private/brief.json"}
+        stored.final_package = {
+            "zip_url": owned_zip,
+            "json_url": r"C:\private\package.json",
+            "internal_note": "/srv/private/package.json",
+        }
+        step = repo.list_steps(session, run["id"])[0]
+        step.output_payload = {"caption": r"rendered from C:\private\step.json"}
+        draft = repo.list_drafts(session, run["id"])[0]
+        draft.tags = ["#safe", "/srv/private/tag.txt"]
+        draft.narrative_plan = {"source_note": r"C:\private\plan.json"}
+        draft.quality_report = {
+            **draft.quality_report,
+            "audit": "checked at /srv/private/report.json",
+        }
+        image = repo.list_images(session, run["id"])[0]
+        image.prompt = r"Use C:\private\prompt.png as the visual source"
+        image.reference_reason = "Selected from /srv/private/reference.png"
+        image.qc_report = {"evidence": r"C:\private\qc.json"}
+        session.add(stored)
+        session.add(step)
+        session.add(draft)
+        session.add(image)
+        session.commit()
+
+    detail = client.get(f"/api/runs/{run['id']}")
+    assert detail.status_code == 200, detail.text
+    public = json.dumps(detail.json(), ensure_ascii=False)
+    assert r"C:\private" not in public
+    assert "/srv/private" not in public
+    assert detail.json()["final_package"] == {"zip_url": owned_zip}
+
+
+def test_export_artifacts_sanitize_paths_embedded_in_content(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+    get_worker().run_once()
+    windows_path = r"C:\private\source.png"
+    posix_path = "/srv/private/source.json"
+    with Session(get_engine()) as session:
+        selected = repo.get_selected_or_recommended_draft(session, run["id"])
+        selected.first_comment = f"loaded from {windows_path}"
+        selected.narrative_plan = {"private_source": posix_path}
+        image = repo.list_images(session, run["id"])[0]
+        image.prompt = f"reference {windows_path}"
+        image.reference_reason = f"reference {posix_path}"
+        image.qc_report = {"private_source": windows_path}
+        session.add(selected)
+        session.add(image)
+        session.commit()
+
+    approved = client.post(f"/api/runs/{run['id']}/asset-approval")
+    assert approved.status_code == 200, approved.text
+    markdown = client.get(approved.json()["final_package"]["markdown_url"]).text
+    package_json = client.get(approved.json()["final_package"]["json_url"]).text
+    archive = client.get(approved.json()["final_package"]["zip_url"]).content
+    with zipfile.ZipFile(BytesIO(archive)) as bundle:
+        archived = "\n".join(
+            bundle.read(name).decode("utf-8")
+            for name in bundle.namelist()
+            if name.endswith((".md", ".json"))
+        )
+    for content in (markdown, package_json, archived):
+        assert windows_path not in content
+        assert windows_path.replace("\\", "\\\\") not in content
+        assert posix_path not in content
+        assert f"/api/runs/{run['id']}/assets/" in content
+
+
+def test_missing_image_blocks_export_then_retry_regenerates_and_approval_succeeds(
+    tmp_path, monkeypatch
+):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    client.post(f"/api/runs/{run['id']}/copy-approval")
+    get_worker().run_once()
+    with Session(get_engine()) as session:
+        images = repo.list_images(session, run["id"])
+        assert images and all(image.file_path for image in images)
+        missing_path = Path(images[0].file_path)
+    missing_path.unlink()
+
+    failed = client.post(
+        f"/api/runs/{run['id']}/asset-approval",
+        headers=_idempotency("missing-asset"),
+    )
+    assert failed.status_code == 409
+    assert failed.json() == {"detail": "image assets are unavailable; retry image generation"}
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "failed"
+    assert detail["current_step"] == "image_generation"
+    assert detail["final_package"] is None
+    package_root = tmp_path / "exports" / str(run["id"])
+    assert not (package_root / "package.json").exists()
+    assert not any(path.suffix == ".zip" for path in package_root.glob("*.zip"))
+    with Session(get_engine()) as session:
+        assert repo.get_idempotency(session, "missing-asset") is None
+        assert session.get(ContentRun, run["id"]).failed_phase == "image"
+
+    retried = client.post(f"/api/runs/{run['id']}/retry")
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "image_queued"
+    assert get_worker().run_once() is True
+    ready = client.get(f"/api/runs/{run['id']}").json()
+    assert ready["status"] == "asset_review_required"
+    assert ready["images"] and all(image["url"] for image in ready["images"])
+    completed = client.post(
+        f"/api/runs/{run['id']}/asset-approval",
+        headers=_idempotency("missing-asset"),
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "completed"
+    assert client.get(completed.json()["final_package"]["zip_url"]).status_code == 200
+
+
 def test_upload_backed_flow_never_exposes_filesystem_paths(tmp_path, monkeypatch):
     client = _prepare(tmp_path, monkeypatch)
     uploaded = client.post(

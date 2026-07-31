@@ -21,6 +21,7 @@ class ContentRun(SQLModel, table=True):
     reference_path: str | None = None
     brief: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     final_package: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    legacy_final_package: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     error: str | None = Field(default=None, sa_column=Column(Text))
     workflow_name: str | None = Field(default=None, index=True)
     workflow_version: str | None = None

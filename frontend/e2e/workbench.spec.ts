@@ -58,6 +58,14 @@ test('complete mock workflow from Brief and upload through export', async ({ pag
     })
     .toBe(true)
 
+  const revisionTab = page.locator('[data-testid^="revision-tab-"]').first()
+  await expect(revisionTab).toBeVisible()
+  await expect(revisionTab).toHaveClass(/active/)
+  await page.getByTestId('candidate-tab-2').click()
+  await expect(page.getByTestId('approve-copy')).toBeDisabled()
+  await revisionTab.click()
+  await expect(page.getByTestId('approve-copy')).toBeEnabled()
+
   await page.getByTestId('approve-copy').click()
   await expect(page.getByTestId('approve-assets')).toBeVisible({ timeout: 30_000 })
   await expect(page.locator('.image-item').first()).toBeVisible()

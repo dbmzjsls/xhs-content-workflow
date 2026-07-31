@@ -39,6 +39,10 @@ class RevisionProviderFailure(RuntimeError):
         self.error_type = type(error).__name__
 
 
+class AssetApprovalFailure(RuntimeError):
+    pass
+
+
 def create_run(session: Session, payload: RunCreate):
     upload_ids = list(dict.fromkeys(payload.upload_asset_ids))
     if len(upload_ids) != len(payload.upload_asset_ids):
@@ -185,7 +189,10 @@ def approve_copy(session: Session, run_id: int, *, commit: bool = True) -> dict[
 
 def approve_assets(session: Session, run_id: int, *, commit: bool = True) -> dict[str, Any]:
     _require_state(session, run_id, "asset_review_required")
-    package = export_service.export_package(session, run_id, commit=False)
+    try:
+        package = export_service.export_package(session, run_id, commit=False)
+    except export_service.AssetPackageValidationError as exc:
+        raise AssetApprovalFailure(str(exc)) from exc
     repo.add_review_action(
         session,
         run_id,
@@ -208,6 +215,21 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
         status = "copy_review_required"
     else:
         raise StateConflict("failed run has no recoverable phase")
+    if run.failed_phase == "image":
+        session.exec(delete(ImageAsset).where(ImageAsset.run_id == run_id))
+        session.exec(
+            update(RunStep)
+            .where(
+                RunStep.run_id == run_id,
+                RunStep.name.in_({"image_generate", "image_qc"}),
+                RunStep.status == "completed",
+            )
+            .values(
+                status="failed",
+                error="invalidated for image regeneration",
+                error_type="AssetValidationFailure",
+            )
+        )
     repo.update_run(
         session,
         run_id,
@@ -215,6 +237,7 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
         current_step="copy_review" if run.failed_phase == "revision" else status,
         clear_error=True,
         clear_failed_phase=run.failed_phase == "revision",
+        clear_final_package=True,
         commit=False,
     )
     _maybe_commit(session, commit, wake=True)
@@ -380,6 +403,56 @@ def record_revision_failure(
         current_step="draft_revision",
         error=str(failure),
         failed_phase="revision",
+        commit=False,
+    )
+    session.commit()
+
+
+def record_asset_approval_failure(
+    session: Session, run_id: int, failure: AssetApprovalFailure
+) -> None:
+    now = utc_now()
+    changed = session.exec(
+        update(ContentRun)
+        .where(
+            ContentRun.id == run_id,
+            ContentRun.status == "asset_review_required",
+        )
+        .values(
+            status="failed",
+            current_step="image_generation",
+            error=str(failure),
+            failed_phase="image",
+            final_package=None,
+            updated_at=now,
+        )
+    )
+    if changed.rowcount != 1:
+        session.rollback()
+        run = repo.get_run(session, run_id)
+        if run is not None and run.status == "canceled":
+            return
+        raise RuntimeError("asset validation failure could not transition the expected run")
+    repo.record_step(
+        session,
+        run_id,
+        "asset_validation",
+        {},
+        {},
+        status="failed",
+        started_at=now,
+        error=str(failure),
+        error_type="AssetValidationFailure",
+        commit=False,
+    )
+    repo.update_run(
+        session,
+        run_id,
+        status="failed",
+        current_step="image_generation",
+        error=str(failure),
+        failed_phase="image",
+        clear_final_package=True,
         commit=False,
     )
     session.commit()

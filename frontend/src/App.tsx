@@ -20,6 +20,7 @@ export function App() {
   const [file, setFile] = useState<File | undefined>()
   const [run, setRun] = useState<Run | undefined>()
   const [history, setHistory] = useState<RunSummary[]>([])
+  const [visibleDraftId, setVisibleDraftId] = useState<number | undefined>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | undefined>()
 
@@ -54,6 +55,10 @@ export function App() {
   }
 
   const selected = useMemo(() => run?.drafts.find((draft) => draft.selected), [run])
+  useEffect(() => {
+    setVisibleDraftId(selected?.id ?? run?.drafts[0]?.id)
+  }, [run?.id, selected?.id])
+  const copyApprovalEnabled = visibleDraftId === selected?.id
   const select = async (draft: Draft) => runAction(async () => { if (run) await api.selectDraft(run.id, draft.id) })
 
   return <main>
@@ -63,10 +68,10 @@ export function App() {
       <RunForm value={brief} file={file} busy={busy} onChange={setBrief} onFileChange={setFile} onSubmit={() => void submit()} />
       <section className="panel history-panel"><div className="panel-title"><RefreshCw size={18} /><span>运行历史</span></div>{history.length === 0 ? <div className="empty-line">暂无历史运行</div> : <ul>{history.map((item) => <li key={item.id}><button type="button" className={run?.id === item.id ? 'active' : ''} onClick={() => { setError(undefined); void refresh(item.id).catch((event) => setError(displayError(event))) }}><b>#{item.id} {item.topic}</b><span className={`run-status ${item.status}`}>{label[item.status] ?? item.status}</span><small>{new Date(item.updated_at).toLocaleString()}</small></button></li>)}</ul>}</section>
       <StepTimeline steps={run?.steps ?? []} currentStep={run?.current_step} />
-      <DraftPreview drafts={run?.drafts ?? []} steps={run?.steps ?? []} canSelect={run?.status === 'copy_review_required'} onSelect={select} />
+      <DraftPreview drafts={run?.drafts ?? []} steps={run?.steps ?? []} canSelect={run?.status === 'copy_review_required'} activeId={visibleDraftId} onActiveChange={setVisibleDraftId} onSelect={select} />
       {run && imagePanelVisible(run) && <ImageAssets images={run.images} />}
     </div>
     {selected && run?.status === 'copy_review_required' && <p className="selection-note">当前选择：方案 {selected.candidate}。可提交修改意见，或通过文案进入图片生成。</p>}
-    <ReviewBar run={run} busy={busy} onRevise={(instructions) => runAction(async () => { if (run) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />
+    <ReviewBar run={run} busy={busy} copyApprovalEnabled={copyApprovalEnabled} onRevise={(instructions) => runAction(async () => { if (run) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />
   </main>
 }

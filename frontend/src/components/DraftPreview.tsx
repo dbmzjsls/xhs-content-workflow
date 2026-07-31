@@ -1,5 +1,5 @@
 import { CheckCircle2, ClipboardCheck, FileText, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { Draft, Step } from '../lib/api'
 
 type CandidateMeta = { candidate: number; angle?: string; recommended?: boolean; hard_report?: { passed?: boolean; issues?: string[] }; score_report?: { total?: number; dimensions?: Record<string, number> } }
@@ -10,12 +10,11 @@ function candidateMeta(steps: Step[]): CandidateMeta[] {
   return Array.isArray(candidates) ? candidates.filter((item): item is CandidateMeta => typeof item === 'object' && item !== null && 'candidate' in item) : []
 }
 
-export function DraftPreview({ drafts, steps, canSelect, onSelect }: { drafts: Draft[]; steps: Step[]; canSelect: boolean; onSelect: (draft: Draft) => Promise<void> }) {
+export function DraftPreview({ drafts, steps, canSelect, activeId, onActiveChange, onSelect }: { drafts: Draft[]; steps: Step[]; canSelect: boolean; activeId?: number; onActiveChange: (draftId: number) => void; onSelect: (draft: Draft) => Promise<void> }) {
   const candidates = useMemo(() => drafts.filter((draft) => draft.parent_draft_id === null).sort((a, b) => a.candidate - b.candidate), [drafts])
+  const displayDrafts = useMemo(() => [...drafts].sort((a, b) => a.candidate - b.candidate || a.id - b.id), [drafts])
   const activeDraft = drafts.find((draft) => draft.selected) ?? candidates[0]
-  const [activeId, setActiveId] = useState<number | undefined>(activeDraft?.id)
-  useEffect(() => setActiveId(activeDraft?.id), [activeDraft?.id])
-  const draft = candidates.find((candidate) => candidate.id === activeId) ?? activeDraft
+  const draft = displayDrafts.find((item) => item.id === activeId) ?? activeDraft
   if (!draft) return <section className="panel empty"><FileText size={20} /><span>运行工作流后生成三版图文候选</span></section>
 
   const meta = candidateMeta(steps).find((item) => item.candidate === draft.candidate)
@@ -28,7 +27,10 @@ export function DraftPreview({ drafts, steps, canSelect, onSelect }: { drafts: D
   return <section className="panel draft-panel">
     <div className="panel-title"><FileText size={18} /><span>文案候选 · 复制审核</span></div>
     <div className="candidate-tabs" role="tablist" aria-label="文案候选">
-      {candidates.map((item) => <button data-testid={`candidate-tab-${item.candidate}`} key={item.id} type="button" className={item.id === draft.id ? 'active' : ''} onClick={() => setActiveId(item.id)}>方案 {item.candidate}{item.selected && ' · 已选'}</button>)}
+      {displayDrafts.map((item) => {
+        const revision = item.parent_draft_id !== null
+        return <button data-testid={revision ? `revision-tab-${item.id}` : `candidate-tab-${item.candidate}`} key={item.id} type="button" className={item.id === draft.id ? 'active' : ''} onClick={() => onActiveChange(item.id)}>{revision ? `Revision · 方案 ${item.candidate}` : `方案 ${item.candidate}`}{item.selected && ' · 已选'}</button>
+      })}
     </div>
     <div className="candidate-meta">
       <span>角度：{meta?.angle ?? (draft.narrative_plan.angle as string | undefined) ?? '内容候选'}</span>

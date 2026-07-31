@@ -45,6 +45,7 @@ def update_run(
     failed_phase: str | None = None,
     clear_error: bool = False,
     clear_failed_phase: bool = False,
+    clear_final_package: bool = False,
     commit: bool = True,
 ) -> ContentRun:
     run = session.get(ContentRun, run_id)
@@ -58,6 +59,8 @@ def update_run(
         run.brief = brief
     if final_package is not None:
         run.final_package = final_package
+    if clear_final_package:
+        run.final_package = None
     if error is not None:
         run.error = error
     if provider is not None:

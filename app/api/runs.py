@@ -22,7 +22,12 @@ from app.schemas import (
     RunSummary,
     StepRead,
 )
-from app.security import redact_internal_error, require_api_token
+from app.security import (
+    owned_final_package,
+    redact_internal_error,
+    require_api_token,
+    sanitize_public_payload,
+)
 from app.services import state_service
 
 logger = logging.getLogger(__name__)
@@ -63,9 +68,9 @@ def list_runs(
         items=[
             RunSummary(
                 id=row.id,
-                status=row.status,
-                current_step=row.current_step,
-                topic=row.topic,
+                status=sanitize_public_payload(row.status),
+                current_step=sanitize_public_payload(row.current_step),
+                topic=sanitize_public_payload(row.topic),
                 error=redact_internal_error(row.error),
                 created_at=row.created_at,
                 updated_at=row.updated_at,
@@ -149,14 +154,25 @@ def approve_assets(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    return _mutation(
-        session,
-        key=idempotency_key,
-        scope="asset-approval",
-        run_id=run_id,
-        payload={},
-        action=lambda: state_service.approve_assets(session, run_id, commit=False),
-    )
+    def record_failure(exc: Exception) -> None:
+        if isinstance(exc, state_service.AssetApprovalFailure):
+            state_service.record_asset_approval_failure(session, run_id, exc)
+
+    try:
+        return _mutation(
+            session,
+            key=idempotency_key,
+            scope="asset-approval",
+            run_id=run_id,
+            payload={},
+            action=lambda: state_service.approve_assets(session, run_id, commit=False),
+            error_callback=record_failure,
+        )
+    except state_service.AssetApprovalFailure as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="image assets are unavailable; retry image generation",
+        ) from exc
 
 
 @router.post("/{run_id}/retry")
@@ -264,22 +280,22 @@ def _read_run(session: Session, run_id: int) -> RunRead:
         raise HTTPException(status_code=404, detail="run not found")
     return RunRead(
         id=run.id,
-        status=run.status,
-        current_step=run.current_step,
-        topic=run.topic,
-        audience=run.audience,
-        product_function=run.product_function,
-        pain_point=run.pain_point,
-        style_preference=run.style_preference,
+        status=sanitize_public_payload(run.status),
+        current_step=sanitize_public_payload(run.current_step),
+        topic=sanitize_public_payload(run.topic),
+        audience=sanitize_public_payload(run.audience),
+        product_function=sanitize_public_payload(run.product_function),
+        pain_point=sanitize_public_payload(run.pain_point),
+        style_preference=sanitize_public_payload(run.style_preference),
         brief=_public_payload(run.brief),
-        final_package=_public_payload(run.final_package),
+        final_package=owned_final_package(run_id, run.final_package),
         error=redact_internal_error(run.error),
         created_at=run.created_at,
         updated_at=run.updated_at,
         steps=[
             StepRead(
-                name=step.name,
-                status=step.status,
+                name=_public_payload(step.name),
+                status=_public_payload(step.status),
                 output_payload=_public_payload(step.output_payload),
                 created_at=step.created_at,
                 attempt=step.attempt,
@@ -288,19 +304,19 @@ def _read_run(session: Session, run_id: int) -> RunRead:
                 completed_at=step.completed_at,
                 duration_ms=step.duration_ms,
                 error=redact_internal_error(step.error),
-                error_type=step.error_type,
+                error_type=_public_payload(step.error_type),
             )
             for step in repo.list_steps(session, run_id)
         ],
         drafts=[
             DraftRead(
                 id=draft.id,
-                title=draft.title,
-                body=draft.body,
-                tags=draft.tags,
-                first_comment=draft.first_comment,
-                narrative_plan=draft.narrative_plan,
-                quality_report=draft.quality_report,
+                title=_public_payload(draft.title),
+                body=_public_payload(draft.body),
+                tags=_public_payload(draft.tags or []),
+                first_comment=_public_payload(draft.first_comment),
+                narrative_plan=_public_payload(draft.narrative_plan or {}),
+                quality_report=_public_payload(draft.quality_report or {}),
                 is_final=draft.is_final,
                 selected=draft.selected,
                 candidate=draft.candidate,
@@ -311,13 +327,13 @@ def _read_run(session: Session, run_id: int) -> RunRead:
         images=[
             ImageRead(
                 id=image.id,
-                kind=image.kind,
-                status=image.status,
-                title=image.title,
-                prompt=image.prompt,
-                reference_reason=image.reference_reason,
+                kind=_public_payload(image.kind),
+                status=_public_payload(image.status),
+                title=_public_payload(image.title),
+                prompt=_public_payload(image.prompt or ""),
+                reference_reason=_public_payload(image.reference_reason or ""),
                 url=f"/api/runs/{run_id}/assets/{image.id}" if image.file_path else None,
-                qc_report=image.qc_report,
+                qc_report=_public_payload(image.qc_report or {}),
             )
             for image in repo.list_images(session, run_id)
         ],
@@ -325,15 +341,7 @@ def _read_run(session: Session, run_id: int) -> RunRead:
 
 
 def _public_payload(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _public_payload(item)
-            for key, item in value.items()
-            if key not in {"path", "file_path", "reference_path"}
-        }
-    if isinstance(value, list):
-        return [_public_payload(item) for item in value]
-    return value
+    return sanitize_public_payload(value)
 
 
 def _contained_file(value: str | Path, root: Path) -> Path:
