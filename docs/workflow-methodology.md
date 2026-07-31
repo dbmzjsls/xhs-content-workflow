@@ -33,4 +33,3 @@ At `asset_review_required`, the operator inspects the generated assets and quali
 Runs, phase attempts, candidate rounds, revisions, review actions, references, image assets, errors, timestamps, durations, and provider/model metadata are persisted. Idempotency keys prevent duplicate review mutations. Failed text, revision, and image phases have phase-aware retry behavior, and canceled provider work cannot publish late results.
 
 The local E2E launcher always forces both providers to `mock` and confines its SQLite database, uploads, and exports to a fresh OS temporary directory. Real-model evaluation is manual, explicitly cost-acknowledged, and excluded from CI.
-

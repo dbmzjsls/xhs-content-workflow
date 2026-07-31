@@ -32,3 +32,13 @@ def test_e2e_launcher_accepts_explicit_mock_temp_roots(tmp_path, monkeypatch) ->
     get_settings.cache_clear()
 
     _require_safe_environment()
+
+
+def test_playwright_backend_uses_uv_project_environment() -> None:
+    config = (Path(__file__).parents[1] / "frontend" / "playwright.config.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "command: 'uv run python scripts/start_e2e_backend.py'" in config
+    assert "cwd: repositoryRoot" in config
+    assert "command: 'python scripts/start_e2e_backend.py'" not in config

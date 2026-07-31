@@ -31,7 +31,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'python scripts/start_e2e_backend.py',
+      command: 'uv run python scripts/start_e2e_backend.py',
       cwd: repositoryRoot,
       env: sharedEnvironment,
       url: 'http://127.0.0.1:8090/healthz',
@@ -48,4 +48,3 @@ export default defineConfig({
     },
   ],
 })
-
