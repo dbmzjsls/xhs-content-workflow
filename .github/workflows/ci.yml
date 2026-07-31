@@ -14,9 +14,6 @@ jobs:
     env:
       LLM_PROVIDER: mock
       IMAGE_PROVIDER: mock
-      DATABASE_URL: sqlite:///${{ runner.temp }}/empty-migration.sqlite
-      EXPORT_DIR: ${{ runner.temp }}/exports
-      UPLOAD_ROOT: ${{ runner.temp }}/uploads
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
 
     steps:
@@ -25,6 +22,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+
+      - name: Configure temporary paths
+        shell: bash
+        run: |
+          echo "DATABASE_URL=sqlite:///$RUNNER_TEMP/empty-migration.sqlite" >> "$GITHUB_ENV"
+          echo "EXPORT_DIR=$RUNNER_TEMP/exports" >> "$GITHUB_ENV"
+          echo "UPLOAD_ROOT=$RUNNER_TEMP/uploads" >> "$GITHUB_ENV"
 
       - name: Install Python dependencies
         run: uv sync --extra dev
