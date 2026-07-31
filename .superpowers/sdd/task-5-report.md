@@ -8,6 +8,7 @@ Implemented the complete offline Task 5 integration surface:
 - Added a strict fixture loader and deterministic `mock-hard` evaluator. It constructs `MockPipelineProvider` directly, so ambient `.env`, provider selection, and API keys cannot redirect CI to a paid provider.
 - Added a manual-only `real-soft` command. It refuses provider lookup unless `--allow-paid-providers` is supplied and then requires an explicitly configured non-mock provider.
 - Added Playwright configuration, guarded backend startup, stable UI test IDs, and a main browser journey covering upload, create, polling, three-way comparison, selection, revision, copy approval, asset approval, and ZIP export.
+- Playwright launches the backend as `uv run python scripts/start_e2e_backend.py` from the repository root, so local and CI runs use the dependencies installed by `uv sync` without shell-specific virtual-environment activation.
 - Added GitHub Actions for `uv sync --extra dev`, empty-DB migration, Ruff, full Pytest, deterministic mock evaluation, `npm ci`, frontend build, Chromium installation, and Playwright.
 - Added `.env.example`, a rewritten README, workflow methodology documentation, and state-machine documentation. They state the local SQLite, single-user, mock-default, and `127.0.0.1` assumptions and the explicit v1 non-goals.
 - Fixed revision retry so `copy_review_required` uses `current_step=copy_review`.
@@ -101,10 +102,23 @@ YAML OK
 
 npm run build
 vite v8.1.3 ... built in 519ms
-
-git diff --check
-passed (only LF-to-CRLF working-copy notices)
 ```
+
+The initial report's `git diff --check` claim was corrected during review: commit `726e73c` contained seven trailing blank lines. Commit `b42f5a4` removes them.
+
+```text
+git diff --check e28bc8a..b42f5a4
+exit 0, no findings
+```
+
+Review-fix regression:
+
+```text
+python -m pytest tests/test_e2e_launcher.py -q --basetemp <OS-temp> -p no:cacheprovider
+3 passed in 1.32s
+```
+
+The added source-contract test asserts both `uv run python scripts/start_e2e_backend.py` and `cwd: repositoryRoot`, and rejects the former bare-system-Python command. It does not require Playwright to be installed.
 
 ## Environment limitations
 
@@ -127,12 +141,9 @@ Consequently, `frontend/package-lock.json` contains the pinned Playwright packag
 - Workflow CI never invokes `real-soft`.
 - Scope review found no auth, distributed worker, publishing, or scraping additions.
 
-## Commit status
+## Commits
 
-No commit could be created in this environment. The workspace sandbox exposes `.git` read-only, so scoped `git add` failed with:
+- `726e73c55cb8bf5946a391d87b76706fa30bf29b` — Task 5 regression evals, CI, documentation, browser-flow source, integration fixes, and original report.
+- `b42f5a44facaf13ff8654db6b11aac554f2154c2` — review fix that runs the Playwright backend through the project uv environment, adds the offline startup-contract regression, and removes all Task 5 trailing blank-line findings.
 
-```text
-fatal: Unable to create '.git/index.lock': Permission denied
-```
-
-The required staging escalation was then rejected by the same host usage-limit gate described above. Policy forbids a workaround. All Task 5 files remain as an uncommitted scoped working-tree change; unrelated pre-existing untracked SDD briefs/review artifacts were not staged or modified.
+This report update is committed separately after the executable review fix so it can record both exact implementation hashes. Unrelated pre-existing untracked SDD briefs/review artifacts remain untouched.
