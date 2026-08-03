@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 const API_BASE = 'http://127.0.0.1:8090'
+const API_TOKEN = 'e2e-api-token'
 
 test('complete mock workflow from Brief and upload through export', async ({ page }) => {
   await page.goto('/')
@@ -50,7 +51,9 @@ test('complete mock workflow from Brief and upload through export', async ({ pag
   expect(revisionResponse.ok()).toBeTruthy()
   await expect
     .poll(async () => {
-      const response = await page.request.get(`${API_BASE}/api/runs/${created.id}`)
+      const response = await page.request.get(`${API_BASE}/api/runs/${created.id}`, {
+        headers: { authorization: `Bearer ${API_TOKEN}` },
+      })
       const detail = (await response.json()) as {
         drafts: Array<{ selected: boolean; parent_draft_id: number | null }>
       }

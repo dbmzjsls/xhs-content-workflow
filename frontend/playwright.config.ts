@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 const runtimeRoot = mkdtempSync(join(tmpdir(), 'xhs-workbench-e2e-'))
 const databasePath = join(runtimeRoot, 'workbench.sqlite').replaceAll('\\', '/')
 const repositoryRoot = resolve(import.meta.dirname, '..')
+const apiToken = 'e2e-api-token'
 const sharedEnvironment = {
   ...process.env,
   DATABASE_URL: `sqlite:///${databasePath}`,
@@ -15,7 +16,7 @@ const sharedEnvironment = {
   LLM_PROVIDER: 'mock',
   IMAGE_PROVIDER: 'mock',
   WORKER_ENABLED: 'true',
-  API_TOKEN: '',
+  API_TOKEN: apiToken,
 }
 
 export default defineConfig({
@@ -41,7 +42,11 @@ export default defineConfig({
     {
       command: 'npm run dev -- --host 127.0.0.1 --port 5174 --strictPort',
       cwd: import.meta.dirname,
-      env: { ...process.env, VITE_API_BASE: 'http://127.0.0.1:8090' },
+      env: {
+        ...process.env,
+        VITE_API_BASE: 'http://127.0.0.1:8090',
+        VITE_API_TOKEN: apiToken,
+      },
       url: 'http://127.0.0.1:5174',
       reuseExistingServer: false,
       timeout: 60_000,

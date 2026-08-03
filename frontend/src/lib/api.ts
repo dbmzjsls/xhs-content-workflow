@@ -1,4 +1,5 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8090'
+const API_TOKEN = import.meta.env.VITE_API_TOKEN?.trim()
 
 export type Step = {
   name: string
@@ -93,13 +94,29 @@ async function errorMessage(response: Response): Promise<string> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await requestResponse(path, options)
+  return response.json() as Promise<T>
+}
+
+async function requestResponse(path: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers)
+  if (API_TOKEN && !headers.has('authorization')) {
+    headers.set('authorization', `Bearer ${API_TOKEN}`)
+  }
   if (options.body && !(options.body instanceof FormData) && !headers.has('content-type')) {
     headers.set('content-type', 'application/json')
   }
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers })
   if (!response.ok) throw new ApiError(await errorMessage(response), response.status)
-  return response.json() as Promise<T>
+  return response
+}
+
+function responseFilename(response: Response): string | undefined {
+  const disposition = response.headers.get('content-disposition')
+  if (!disposition) return undefined
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1]
+  if (encoded) return decodeURIComponent(encoded)
+  return /filename="?([^";]+)"?/i.exec(disposition)?.[1]
 }
 
 const idempotencyHeaders = () => ({ 'Idempotency-Key': crypto.randomUUID() })
@@ -121,5 +138,9 @@ export const api = {
   approveAssets: (id: number) => request<{ status: string }>(`/api/runs/${id}/asset-approval`, { method: 'POST', headers: idempotencyHeaders() }),
   retry: (id: number) => request<{ status: string }>(`/api/runs/${id}/retry`, { method: 'POST', headers: idempotencyHeaders() }),
   cancel: (id: number) => request<{ status: string }>(`/api/runs/${id}/cancel`, { method: 'POST', headers: idempotencyHeaders() }),
-  url: (path: string) => `${API_BASE}${path}`,
+  blob: async (path: string) => (await requestResponse(path)).blob(),
+  download: async (path: string) => {
+    const response = await requestResponse(path)
+    return { blob: await response.blob(), filename: responseFilename(response) }
+  },
 }
