@@ -59,6 +59,11 @@ def _legacy_database(path: Path, *, duplicate_drafts: bool = False) -> None:
             """
         )
         if duplicate_drafts:
+            # Recreate the table in its genuinely legacy, unconstrained shape so
+            # the pre-migration duplicate validation can still be exercised.
+            connection.execute("CREATE TABLE drafts_legacy AS SELECT * FROM drafts")
+            connection.execute("DROP TABLE drafts")
+            connection.execute("ALTER TABLE drafts_legacy RENAME TO drafts")
             connection.execute(
                 """
                 INSERT INTO drafts (run_id, version, title, body, is_final, created_at)
@@ -102,7 +107,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path):
         }
 
 
-def test_0001_defers_draft_version_uniqueness_to_0002(tmp_path: Path):
+def test_0001_enforces_unique_draft_versions_per_run(tmp_path: Path):
     database = tmp_path / "initial.db"
     _upgrade_to_0001(database)
 
@@ -116,15 +121,19 @@ def test_0001_defers_draft_version_uniqueness_to_0002(tmp_path: Path):
                       'pain', '2026-01-01 00:00:00', '2026-01-01 00:00:00')
             """
         )
-        connection.executemany(
+        connection.execute(
             """
             INSERT INTO drafts (run_id, version, title, body, is_final, created_at)
-            VALUES (1, 1, ?, 'body', 0, '2026-01-01 00:00:00')
+            VALUES (1, 1, 'first', 'body', 0, '2026-01-01 00:00:00')
             """,
-            [("first",), ("second",)],
         )
-        connection.commit()
-        assert connection.execute("SELECT COUNT(*) FROM drafts").fetchone() == (2,)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO drafts (run_id, version, title, body, is_final, created_at)
+                VALUES (1, 1, 'second', 'body', 0, '2026-01-01 00:00:00')
+                """
+            )
 
 
 def test_legacy_database_is_backed_up_and_rows_are_preserved(tmp_path: Path):

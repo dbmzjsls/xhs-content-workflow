@@ -393,6 +393,38 @@ def test_hard_rule_failure_cannot_be_selected_or_approved(tmp_path, monkeypatch)
     assert bypass.status_code == 409
 
 
+def test_revision_and_copy_approval_require_explicit_selection(tmp_path, monkeypatch):
+    client = _prepare(tmp_path, monkeypatch)
+    run = _create(client)
+    get_worker().run_once()
+    with Session(get_engine()) as session:
+        drafts = repo.list_drafts(session, run["id"])
+        assert any(draft.quality_report.get("hard", {}).get("passed") for draft in drafts)
+        for draft in drafts:
+            draft.selected = False
+            session.add(draft)
+        session.commit()
+        draft_count = len(drafts)
+
+    revision = client.post(
+        f"/api/runs/{run['id']}/revisions",
+        json={"instructions": "更口语一点"},
+        headers=_idempotency("reject-unselected-revision"),
+    )
+    approval = client.post(
+        f"/api/runs/{run['id']}/copy-approval",
+        headers=_idempotency("reject-unselected-approval"),
+    )
+
+    assert revision.status_code == 400
+    assert revision.json() == {"detail": "no draft selected to revise"}
+    assert approval.status_code == 409
+    assert approval.json() == {"detail": "no eligible draft selected"}
+    with Session(get_engine()) as session:
+        assert len(repo.list_drafts(session, run["id"])) == draft_count
+        assert repo.get_run(session, run["id"]).status == "copy_review_required"
+
+
 def test_retry_persisted_round_without_recommendation_stays_failed(tmp_path, monkeypatch):
     client = _prepare(tmp_path, monkeypatch)
     original = content_pipeline.generate_candidate_round

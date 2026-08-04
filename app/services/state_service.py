@@ -117,9 +117,9 @@ def revise_draft(
     session: Session, run_id: int, payload: DraftRevision, *, commit: bool = True
 ) -> dict[str, Any]:
     run = _require_state(session, run_id, "copy_review_required")
-    parent = repo.get_selected_or_recommended_draft(session, run_id)
+    parent = repo.get_selected_draft(session, run_id)
     if parent is None:
-        raise ValueError("no draft to revise")
+        raise ValueError("no draft selected to revise")
     started_at = utc_now()
     attempt = repo.next_step_attempt(session, run_id, "draft_revision")
     try:
@@ -163,7 +163,7 @@ def revise_draft(
 
 def approve_copy(session: Session, run_id: int, *, commit: bool = True) -> dict[str, Any]:
     _require_state(session, run_id, "copy_review_required")
-    eligible = repo.get_selected_or_recommended_draft(session, run_id)
+    eligible = repo.get_selected_draft(session, run_id)
     if eligible is None or not _is_hard_pass(eligible):
         raise StateConflict("no eligible draft selected")
     repo.add_review_action(

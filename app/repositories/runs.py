@@ -214,6 +214,14 @@ def get_selected_or_recommended_draft(session: Session, run_id: int) -> Draft | 
     )
 
 
+def get_selected_draft(session: Session, run_id: int) -> Draft | None:
+    return session.exec(
+        select(Draft)
+        .where(Draft.run_id == run_id, Draft.selected.is_(True))
+        .order_by(Draft.version.desc())
+    ).first()
+
+
 def mark_selected_or_recommended_draft_final(
     session: Session, run_id: int, *, commit: bool = True
 ) -> Draft | None:
