@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import html
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,7 @@ def select_references(
             "source": "user",
             "role": "cover_style",
             "path": str(brief["reference_path"]),
+            "label": "user-reference",
             "reason": "用户提供参考图，优先决定封面构图、标题承载和情绪。",
         })
     else:
@@ -58,6 +61,7 @@ def select_references(
                 "source": "cover_library",
                 "role": "cover_style",
                 "path": str(chosen),
+                "label": f"cover-library:{chosen.name}",
                 "reason": f"无用户参考图，按风格「{style}」从不同风格封面库选择封面骨架。",
             })
 
@@ -69,6 +73,7 @@ def select_references(
                 "source": "product_library",
                 "role": "product_ui",
                 "path": str(product_ref),
+                "label": f"product-library:{product_ref.name}",
                 "reason": "当前图片需要产品可信度，补充 Cathoven 真实 UI 素材用于界面结构。",
             })
     return refs
@@ -101,18 +106,17 @@ def generate_image_assets(run_id: int, prompts: list[dict[str, Any]]) -> list[di
     out_dir = settings.export_dir / str(run_id) / "assets"
     out_dir.mkdir(parents=True, exist_ok=True)
     assets = []
+    provider = settings.image_provider.casefold()
+    if provider not in {"mock", "openai", "openai-compatible"}:
+        raise RuntimeError(f"unsupported image provider: {provider}")
     for index, prompt in enumerate(prompts, start=1):
         path = out_dir / f"{index:02d}-{_safe_name(prompt['kind'])}.svg"
-        status = "fallback"
-        try:
-            generated = _try_generate_real_image(prompt["prompt"], out_dir, index)
-        except Exception:
-            generated = None
-        if generated:
-            path = generated
-            status = "generated"
-        else:
+        if provider == "mock":
             _write_svg_fallback(path, prompt["title"], prompt["kind"])
+            status = "mock"
+        else:
+            path = _generate_real_image(prompt["prompt"], out_dir, index)
+            status = "generated"
         assets.append({
             **prompt,
             "status": status,
@@ -180,7 +184,8 @@ def _prompt_for(
     references: list[dict[str, Any]],
 ) -> str:
     ref_text = "\n".join(
-        f"- {ref['role']}: {ref['path']} ({ref['reason']})" for ref in references
+        f"- {ref['role']}: {_reference_label(ref)} ({ref['reason']})"
+        for ref in references
     ) or "- No file reference available; follow the encoded Cathoven XHS workflow."
     if task == "封面图":
         return f"""Use case: ads-marketing
@@ -290,10 +295,10 @@ Avoid:
 forced product placement, fake book brands, unrelated logos, old dates, perfect showroom desk."""
 
 
-def _try_generate_real_image(prompt: str, out_dir: Path, index: int) -> Path | None:
+def _generate_real_image(prompt: str, out_dir: Path, index: int) -> Path:
     settings = get_settings()
     if not settings.image_api_key:
-        return None
+        raise RuntimeError("IMAGE_API_KEY is not configured")
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.image_api_key, base_url=settings.image_base_url)
@@ -305,10 +310,15 @@ def _try_generate_real_image(prompt: str, out_dir: Path, index: int) -> Path | N
     )
     item = response.data[0]
     if not getattr(item, "b64_json", None):
-        return None
+        raise RuntimeError("image provider returned no image data")
     path = out_dir / f"{index:02d}-generated.png"
-    path.write_bytes(base64.b64decode(item.b64_json))
+    _atomic_write(path, base64.b64decode(item.b64_json))
     return path
+
+
+def _try_generate_real_image(prompt: str, out_dir: Path, index: int) -> Path:
+    """Compatibility wrapper for the former optional-generation helper."""
+    return _generate_real_image(prompt, out_dir, index)
 
 
 def _write_svg_fallback(path: Path, title: str, kind: str) -> None:
@@ -333,8 +343,29 @@ def _write_svg_fallback(path: Path, title: str, kind: str) -> None:
   <text x="185" y="855" fill="{ink}" font-size="34" font-family="Arial, sans-serif">image provider not configured</text>
   <text x="140" y="1210" fill="{accent}" font-size="42" font-family="Arial, sans-serif" font-weight="700">Cathoven XHS Workflow</text>
 </svg>"""
-    path.write_text(svg, encoding="utf-8")
+    _atomic_write(path, svg.encode("utf-8"))
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in value).strip("-") or "asset"
+
+
+def _reference_label(reference: dict[str, Any]) -> str:
+    label = reference.get("label")
+    if isinstance(label, str) and label:
+        return label
+    return f"{reference.get('source', 'reference')}:{reference.get('role', 'asset')}"

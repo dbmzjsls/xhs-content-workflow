@@ -1,0 +1,33 @@
+version: 1
+cases:
+  - id: writing
+    brief:
+      topic: "The essay feedback habit that finally unstuck my writing"
+      audience: "IELTS 5.5-6.5 self-study learners"
+      product_function: "Writing Checker"
+      pain_point: "I kept rewriting vocabulary but could not tell which scoring dimension was weak"
+      style_preference: "memo chat style"
+
+  - id: speaking
+    brief:
+      topic: "A calmer way to review speaking practice before bed"
+      audience: "IELTS speaking learners who freeze when recording"
+      product_function: "Speaking Practice"
+      pain_point: "I could hear that an answer sounded awkward but did not know what to revise"
+      style_preference: "before and after comparison"
+
+  - id: commuting
+    brief:
+      topic: "What I noticed while reviewing an essay on the subway"
+      audience: "Busy IELTS learners with short commutes"
+      product_function: "Writing Checker"
+      pain_point: "My commute was too fragmented for a full lesson and my examples still missed the point"
+      style_preference: "magazine style"
+
+  - id: tutorial
+    brief:
+      topic: "A three-step tutorial for checking whether an example supports a claim"
+      audience: "First-time IELTS writing learners"
+      product_function: "Writing Checker"
+      pain_point: "I needed a concrete sequence instead of collecting another long study guide"
+      style_preference: "collage style"

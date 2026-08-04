@@ -2,21 +2,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from app.api import runs
+from app.api import runs, uploads
 from app.config import get_settings
-from app.db import init_db
-
-settings = get_settings()
-settings.export_dir.mkdir(parents=True, exist_ok=True)
+from app.services.worker import get_worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    settings = get_settings()
     settings.export_dir.mkdir(parents=True, exist_ok=True)
-    yield
+    settings.upload_root.mkdir(parents=True, exist_ok=True)
+    worker = get_worker()
+    worker.start()
+    try:
+        yield
+    finally:
+        worker.stop()
 
 
 app = FastAPI(title="XHS Content Workflow", lifespan=lifespan)
@@ -28,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(runs.router)
-app.mount("/exports", StaticFiles(directory=str(settings.export_dir)), name="exports")
+app.include_router(uploads.router)
 
 
 @app.get("/healthz")

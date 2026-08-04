@@ -14,7 +14,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = SQLModel.metadata
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# A programmatic caller (``python -m app.migrate``) may provide a specific
+# temporary/database URL.  The checked-in Alembic default remains a fallback
+# for direct CLI use, where application settings should still take precedence.
+if config.get_main_option("sqlalchemy.url") == "sqlite:///xhs_workflow.db":
+    config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 
 def run_migrations_offline() -> None:

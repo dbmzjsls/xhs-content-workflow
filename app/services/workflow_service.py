@@ -4,7 +4,7 @@ from sqlmodel import Session
 
 from app.repositories import runs as repo
 from app.schemas import ReviewRequest, RunCreate
-from app.services import content_rules, export_service
+from app.services import content_pipeline, content_rules, export_service
 from app.workflow.graph import run_workflow
 
 
@@ -55,45 +55,20 @@ def review_run(session: Session, run_id: int, payload: ReviewRequest):
             first_comment=replacement.get("first_comment"),
             narrative_plan={"source": "human replacement"},
             quality_report=content_rules.xhs_quality_check(replacement),
+            selected=True,
         )
-        repo.update_run(session, run_id, status="review_required", current_step="human_review")
-        return {"draft_id": draft.id, "status": "review_required"}
-    drafts = repo.list_drafts(session, run_id)
-    if not drafts:
+        repo.update_run(
+            session, run_id, status="copy_review_required", current_step="copy_review"
+        )
+        return {"draft_id": draft.id, "status": "copy_review_required"}
+    parent = repo.get_selected_or_recommended_draft(session, run_id)
+    if parent is None:
         raise ValueError("no draft to revise")
-    latest = drafts[-1]
-    revised_body = _append_revision_note(latest.body, payload.instructions)
-    revised = {
-        "title": latest.title,
-        "body": revised_body,
-        "tags": latest.tags,
-        "first_comment": latest.first_comment,
-    }
-    quality = content_rules.xhs_quality_check(revised)
-    repo.add_draft(
+    child = content_pipeline.create_revision(
         session,
-        run_id,
-        title=revised["title"],
-        body=revised["body"],
-        tags=revised["tags"],
-        first_comment=revised["first_comment"],
-        narrative_plan=latest.narrative_plan,
-        quality_report={"manual_revision": payload.instructions, "post_revision": quality},
+        parent,
+        run.brief,
+        payload.instructions or "Improve clarity while preserving the original meaning.",
     )
-    repo.update_run(session, run_id, status="review_required", current_step="human_review")
-    return {"status": "review_required"}
-
-
-def _append_revision_note(body: str, instructions: str | None) -> str:
-    body = body.rstrip()
-    if not instructions:
-        return body[: content_rules.MAX_BODY_CHARS]
-
-    note = f"人工返修备注：{instructions.strip()[:80]}"
-    separator = "\n\n"
-    max_body_chars = content_rules.MAX_BODY_CHARS - len(separator) - len(note)
-    if max_body_chars <= 0:
-        return note[: content_rules.MAX_BODY_CHARS]
-    if len(body) > max_body_chars:
-        body = body[: max_body_chars - 1].rstrip(content_rules.BODY_STRIP_CHARS) + "。"
-    return f"{body}{separator}{note}"
+    repo.update_run(session, run_id, status="copy_review_required", current_step="copy_review")
+    return {"draft_id": child.id, "status": "copy_review_required"}

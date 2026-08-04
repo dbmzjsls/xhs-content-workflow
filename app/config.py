@@ -11,6 +11,10 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{ROOT_DIR / 'xhs_workflow.db'}"
     export_dir: Path = ROOT_DIR / "exports"
+    upload_root: Path = ROOT_DIR / "uploads"
+    worker_enabled: bool = True
+    worker_poll_seconds: float = 0.5
+    stale_worker_seconds: int = 300
 
     llm_provider: str = "mock"
     openai_compatible_api_key: str | None = None
@@ -18,6 +22,7 @@ class Settings(BaseSettings):
     openai_compatible_model: str = "gpt-4o-mini"
 
     image_api_key: str | None = None
+    image_provider: str = "mock"
     image_base_url: str = "https://api.openai.com/v1"
     image_model: str = "gpt-image-1"
 

@@ -1,69 +1,89 @@
 # XHS Content Workflow
 
-小红书内容生产工作台，把 Cathoven 小红书写作与图片生成方法论产品化成可审计的顺序工作流。
+A local, auditable workbench for producing Xiaohongshu content through explicit copy and asset review gates. The v1 system is intentionally single-user, SQLite-backed, and bound to `127.0.0.1`; it does not publish to Xiaohongshu or scrape external sites.
 
-## What It Does
+## Prerequisites
 
-- 不是简单把主题丢给 AI 生成文案。
-- 推文生成遵守 `小红书推文写作工作流.md`：情绪价值、痛点场景、黄金叙事弧线、发现式产品植入、去 AI 味、品牌名和标签硬规则。
-- 图片生成遵守 `Cathoven生成图片工作流.md`：先判断图片任务，再选参考图，再改写 prompt；不默认生成桌面实拍和产品屏幕。
-- 无模型 key 时使用 mock provider，仍能完整跑通：文案、图片 prompt、SVG fallback、质检、人工审核、发布包导出。
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 22+
 
-## Quick Start
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install -e .[dev]
-.\.venv\Scripts\alembic upgrade head
-.\.venv\Scripts\python -m uvicorn app.main:app --reload --port 8090
-```
-
-前端：
+## Install and migrate
 
 ```powershell
-cd frontend
-npm install
-npx vite --host 127.0.0.1 --port 5174
+uv sync --extra dev
+Copy-Item .env.example .env
+.\.venv\Scripts\Activate.ps1
+python -m app.migrate
+
+Set-Location frontend
+npm ci
+Set-Location ..
 ```
 
-默认后端地址：`http://127.0.0.1:8090`  
-默认前端地址：`http://127.0.0.1:5174`
+`python -m app.migrate` upgrades the configured file-backed SQLite database. The default is `./xhs_workflow.db`. For a first run, start from an empty/nonexistent database file; legacy databases are validated and backed up before adoption.
 
-## Optional Model Settings
+## Start locally
 
-```env
-LLM_PROVIDER=openai
-OPENAI_COMPATIBLE_API_KEY=...
-OPENAI_COMPATIBLE_BASE_URL=https://api.openai.com/v1
-OPENAI_COMPATIBLE_MODEL=gpt-4o-mini
-IMAGE_API_KEY=...
-IMAGE_BASE_URL=https://api.openai.com/v1
-IMAGE_MODEL=gpt-image-1
-```
-
-未配置时自动使用 mock。
-
-参考图目录和 API 访问令牌可选配置：
-
-```env
-CATHOVEN_COVER_REFERENCE_DIR=./references/covers
-CATHOVEN_PRODUCT_REFERENCE_DIR=./references/product
-API_TOKEN=change-me
-```
-
-如果设置了 `API_TOKEN`，前端需要配置同值：
-
-```env
-VITE_API_TOKEN=change-me
-```
-
-## Migrations
-
-项目提供 Alembic 初始迁移：
+Backend:
 
 ```powershell
-alembic upgrade head
-alembic revision --autogenerate -m "describe change"
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8090
 ```
 
-默认使用 SQLite，设置 `DATABASE_URL=postgresql+psycopg://...` 后可迁移到 PostgreSQL。
+Frontend, in a second terminal:
+
+```powershell
+Set-Location frontend
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+Open `http://127.0.0.1:5174`. The UI calls `http://127.0.0.1:8090` by default. Do not expose either development server on `0.0.0.0`; v1 has no multi-user authentication boundary.
+
+## Safe default and real providers
+
+`.env.example` selects deterministic `mock` text and image providers. A complete copy/image/export workflow works without API keys and makes no paid-provider calls.
+
+Real-provider configuration is opt-in. Set `LLM_PROVIDER=openai` (or `openai-compatible`) and the compatible key/base URL/model only for an intentional local run. Image provider configuration is separate. The application never silently falls back from a failed real provider to mock output.
+
+## Tests and regression evaluation
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pytest -q
+ruff check app tests migrations scripts
+python -m app.evals.briefs mock-hard
+
+Set-Location frontend
+npm run build
+npm run test:e2e:install
+npm run test:e2e
+```
+
+The fixed Brief cases cover writing, speaking, commuting, and tutorial scenarios. `mock-hard` constructs the deterministic mock provider directly, ignores ambient provider selection, and is safe for CI.
+
+Real-model soft-score evaluation is manual only and is never run by CI. It requires both a configured real provider and an explicit acknowledgement:
+
+```powershell
+$env:LLM_PROVIDER = 'openai'
+$env:OPENAI_COMPATIBLE_API_KEY = '<key>'
+python -m app.evals.briefs real-soft --allow-paid-providers
+```
+
+That command can incur provider cost. Omitting `--allow-paid-providers` fails before provider lookup.
+
+Playwright starts both servers on fixed `127.0.0.1` ports. Its backend launcher overrides providers to mock and creates the database, exports, and uploads under a fresh OS temporary directory, so it does not touch `xhs_workflow.db`.
+
+## Project guide
+
+- [Workflow methodology](docs/workflow-methodology.md)
+- [State machine](docs/state-machine.md)
+- API health: `GET http://127.0.0.1:8090/healthz`
+
+## Explicit non-goals for v1
+
+- multi-user accounts, authorization, or public hosting
+- Redis, Celery, or distributed workers
+- automatic publishing
+- external Xiaohongshu scraping

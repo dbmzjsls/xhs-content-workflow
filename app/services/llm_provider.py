@@ -94,12 +94,6 @@ def get_draft_provider() -> DraftProvider:
 
 def generate_draft(brief: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
     provider = get_draft_provider()
-    try:
-        return provider.generate_draft(brief, plan)
-    except Exception as exc:
-        fallback = MockDraftProvider().generate_draft(brief, plan)
-        return {
-            **fallback,
-            "provider": "mock-fallback",
-            "provider_error": str(exc),
-        }
+    # Provider selection is explicit: an OpenAI-compatible failure must be
+    # observable to the caller, never hidden by an unrelated mock response.
+    return provider.generate_draft(brief, plan)

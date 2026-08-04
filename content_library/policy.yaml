@@ -1,0 +1,28 @@
+version: "2026-07-30.1"
+brand_name: "Cathoven猫多芬雅思"
+required_tags:
+  - "#猫多芬雅思"
+  - "#cathovenielts"
+hard_sell_terms:
+  - "buy now"
+  - "guaranteed score"
+  - "must-have"
+  - "best ever"
+  - "强烈推荐"
+  - "立刻提分"
+scene_markers:
+  - "at my desk"
+  - "11pm"
+  - "on the subway"
+  - "地铁"
+  - "before bed"
+  - "咖啡店"
+  - "书桌"
+  - "晚上"
+  - "睡前"
+discovery_markers:
+  - "later"
+  - "then I realized"
+  - "I discovered"
+  - "后来"
+  - "才发现"
