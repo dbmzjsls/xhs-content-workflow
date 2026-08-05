@@ -26,7 +26,7 @@ export function ReviewBar({ run, busy, reviewActionsEnabled, onRevise, onApprove
       anchor.href = objectUrl
       anchor.download = filename ?? `run-${runId}.zip`
       anchor.click()
-      URL.revokeObjectURL(objectUrl)
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : '下载失败')
     } finally {
