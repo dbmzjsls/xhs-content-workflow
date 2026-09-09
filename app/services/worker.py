@@ -5,7 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 from threading import Event, Lock, Thread
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
@@ -125,14 +125,25 @@ class RunWorker:
                 ).first()
                 if run is None or run.id is None:
                     return None
+                run_id, queued_status = run.id, run.status
                 phase = "text" if run.status == "queued" else "image"
-                run.status = "running" if phase == "text" else "image_running"
-                run.current_step = "text_generation" if phase == "text" else "image_generation"
-                run.heartbeat_at = utc_now()
-                run.updated_at = utc_now()
-                session.add(run)
+                now = utc_now()
+                # A cancel or another worker may have committed after the queue read.
+                claimed = session.exec(
+                    update(ContentRun)
+                    .where(ContentRun.id == run_id, ContentRun.status == queued_status)
+                    .values(
+                        status="running" if phase == "text" else "image_running",
+                        current_step="text_generation" if phase == "text" else "image_generation",
+                        heartbeat_at=now,
+                        updated_at=now,
+                    )
+                )
+                if claimed.rowcount != 1:
+                    session.rollback()
+                    return None
                 session.commit()
-                return run.id, phase
+                return run_id, phase
         except OperationalError:
             logger.info("worker claim skipped because the database is not migrated")
             return None
