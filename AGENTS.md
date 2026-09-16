@@ -21,9 +21,17 @@
 
 ## Validation
 
-Run the checks relevant to the change. The full CI-equivalent sequence is:
+Run the checks relevant to the change. Before migrations or workflow tests, point all mutable
+paths at a disposable directory and force deterministic providers. On a Bash-based runner:
 
 ```text
+review_tmp="$(mktemp -d)"
+export DATABASE_URL="sqlite:///$review_tmp/workflow.sqlite"
+export EXPORT_DIR="$review_tmp/exports"
+export UPLOAD_ROOT="$review_tmp/uploads"
+export LLM_PROVIDER=mock
+export IMAGE_PROVIDER=mock
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 uv sync --extra dev
 uv run python -m app.migrate
 uv run ruff check app tests migrations scripts
@@ -34,5 +42,5 @@ npx playwright install --with-deps chromium
 npm run test:e2e
 ```
 
-Use temporary database, export, and upload paths when exercising workflows. Do not run
-`real-soft` evaluation or enable real providers during automated validation.
+Do not run `real-soft` evaluation or provide live-provider credentials during automated
+validation.

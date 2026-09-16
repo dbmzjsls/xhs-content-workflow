@@ -11,7 +11,9 @@ Review backend changes against these risks:
 - Migration changes must upgrade both empty and supported legacy databases without data loss.
 - Upload filenames, MIME signatures, sizes, and resolved paths must remain constrained; public
   responses must not expose absolute paths, credentials, or raw provider errors.
-- Automated tests must use mock providers and isolated temporary storage.
+- Workflow and integration tests must use deterministic providers and isolated temporary storage.
+  Provider-validation tests may select a real-provider identifier to exercise configuration
+  failures, but must not use live credentials or make external provider calls.
 
 Require a focused regression test when a behavior, state transition, persistence rule, security
 boundary, or recovery path changes.
