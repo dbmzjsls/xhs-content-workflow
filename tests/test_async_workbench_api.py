@@ -6,7 +6,9 @@ from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -25,7 +27,7 @@ from app.models import (
 from app.repositories import runs as repo
 from app.schemas import RunCreate
 from app.security import redact_internal_error
-from app.services import content_pipeline, execution_service, image_rules, state_service
+from app.services import content_pipeline, execution_service, image_rules, state_service, worker
 from app.services.worker import get_worker
 from app.time_utils import utc_now
 
@@ -208,6 +210,60 @@ def test_cancel_during_provider_work_wins_over_worker_completion(tmp_path, monke
     detail = client.get(f"/api/runs/{run['id']}").json()
     assert detail["status"] == "canceled"
     assert detail["images"] == []
+
+
+@pytest.mark.parametrize("phase", ["text", "image"])
+@pytest.mark.parametrize("competing_action", ["cancel", "claim"])
+def test_stale_worker_claim_cannot_revive_or_duplicate_work(
+    tmp_path, monkeypatch, phase, competing_action
+):
+    client = _prepare(tmp_path, monkeypatch)
+    run_id = _create(client)["id"]
+    if phase == "image":
+        assert get_worker().run_once() is True
+        assert client.post(f"/api/runs/{run_id}/copy-approval").status_code == 200
+    before = client.get(f"/api/runs/{run_id}").json()
+    competing_claims = []
+    committed_states = []
+    executions = []
+    paused = False
+
+    class InterleavedSession(Session):
+        def exec(self, statement, *args, **kwargs):
+            nonlocal paused
+            result = super().exec(statement, *args, **kwargs)
+            if not paused and getattr(statement, "is_select", False):
+                # Consume the real queue read before another transaction commits.
+                # Return the original row so the first worker resumes with stale state.
+                row = result.first()
+                paused = True
+                assert row.id == run_id
+                if competing_action == "cancel":
+                    response = client.post(f"/api/runs/{run_id}/cancel")
+                    assert response.status_code == 200
+                else:
+                    competing_claims.append(worker.RunWorker()._claim_next())
+                committed_states.append(client.get(f"/api/runs/{run_id}").json())
+                return SimpleNamespace(first=lambda: row)
+            return result
+
+    monkeypatch.setattr(worker, "Session", InterleavedSession)
+    monkeypatch.setattr(worker, "run_text_phase", lambda *args: executions.append("text"))
+    monkeypatch.setattr(worker, "run_image_phase", lambda *args: executions.append("image"))
+    assert worker.RunWorker().run_once() is False
+    assert paused
+    assert executions == []
+    after = client.get(f"/api/runs/{run_id}").json()
+    assert after == committed_states[0]
+    if competing_action == "cancel":
+        assert after["status"] == after["current_step"] == "canceled"
+        assert client.post(f"/api/runs/{run_id}/retry").status_code == 409
+    else:
+        assert competing_claims == [(run_id, phase)]
+        assert after["status"] == ("running" if phase == "text" else "image_running")
+    assert after["steps"] == before["steps"]
+    assert after["drafts"] == before["drafts"]
+    assert after["images"] == []
 
 
 def test_failure_retry_resumes_failed_phase_without_repeating_text(tmp_path, monkeypatch):
