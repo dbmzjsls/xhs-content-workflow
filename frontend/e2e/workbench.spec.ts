@@ -4,6 +4,14 @@ const API_BASE = 'http://127.0.0.1:8090'
 const API_TOKEN = 'e2e-api-token'
 const REFERENCE_USAGE = '参考信息驱动的 prompt 重写：仅使用素材角色、标签和选择理由；不分析或向生成模型发送图片内容。上传图片仅供素材留档，生成结果不会自动参考其构图、颜色或 UI。'
 const HISTORICAL_NOTICE = '下方保留原始生成记录，历史记录可能包含旧版能力描述；图片内容未作为模型输入。'
+const ABSOLUTE_FILESYSTEM_PATH = /(?:^|["'\s(])(?:[A-Za-z]:\\{1,2}|\/(?:Users|home|tmp|srv)\/)/
+
+test('absolute path matcher ignores prompt labels and detects filesystem paths', () => {
+  expect('Primary request:\\nCreate a cover').not.toMatch(ABSOLUTE_FILESYSTEM_PATH)
+  expect('C:\\Users\\runner\\reference.png').toMatch(ABSOLUTE_FILESYSTEM_PATH)
+  expect(JSON.stringify({ path: 'C:\\Users\\runner\\reference.png' })).toMatch(ABSOLUTE_FILESYSTEM_PATH)
+  expect('/tmp/xhs-workbench/reference.png').toMatch(ABSOLUTE_FILESYSTEM_PATH)
+})
 
 for (const withUpload of [true, false]) {
   test(`complete mock workflow ${withUpload ? 'with upload' : 'without reference'} through export`, async ({ page }) => {
@@ -102,7 +110,7 @@ for (const withUpload of [true, false]) {
     expect(markdown).toContain(HISTORICAL_NOTICE)
     expect(JSON.parse(packageJson).reference_usage).toBe(REFERENCE_USAGE)
     for (const content of [JSON.stringify(detail), markdown, packageJson]) {
-      expect(content).not.toMatch(/[A-Za-z]:\\|\/(?:Users|home|tmp|srv)\//)
+      expect(content).not.toMatch(ABSOLUTE_FILESYSTEM_PATH)
     }
     await expect(page.locator('.image-panel').getByText(REFERENCE_USAGE, { exact: true })).toBeVisible()
   })
@@ -120,7 +128,7 @@ test('historical audit keeps its capability notice through an empty failed panel
     error: 'image provider failed', created_at: '2026-10-01T00:00:00Z',
     updated_at: '2026-10-01T00:00:00Z', steps: [], drafts: [], images: [],
   }
-  await page.route('**/api/runs**', async (route) => {
+  await page.route(/\/api\/runs(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/runs') {
       await route.fulfill({ json: { items: [historicalRun] } })
