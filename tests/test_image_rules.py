@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.config import get_settings
 from app.services import content_rules, image_rules
 
@@ -45,6 +47,46 @@ def test_prompt_rewrite_keeps_reference_and_cathoven_constraints():
     assert "All visible dates must be 2026" in prompts[1]["prompt"]
 
 
+@pytest.mark.parametrize("task", image_rules.TASK_TO_STYLE)
+@pytest.mark.parametrize("has_references", [True, False])
+def test_every_prompt_describes_text_only_reference_metadata(task, has_references):
+    brief = _brief()
+    refs = [
+        {"role": "cover_style", "label": "test-cover", "reason": "metadata"},
+        {"role": "product_ui", "label": "test-ui", "reason": "metadata"},
+    ]
+    prompts = image_rules.rewrite_image_prompts(
+        brief,
+        content_rules.route_style(brief),
+        {"title": "睡前20分钟改作文"},
+        {"tasks": [task]},
+        refs if has_references else [],
+    )
+
+    prompt = prompts[0]["prompt"]
+    assert "Reference metadata (text only; image contents are not provided)" in prompt
+    for phrase in (
+        "Use the reference image",
+        "Use the provided Cathoven screenshot",
+        "Use the reference for collage structure",
+    ):
+        assert phrase not in prompt
+    assert "Do not copy exact text" in prompt
+    if task == "封面图":
+        assert "thumbnail-readable" in prompt
+    if task in {"产品 UI 图", "教程步骤图"}:
+        assert "desktop web" in prompt
+    if task == "产品 UI 图":
+        assert "Create a desktop web layout with card hierarchy, purple UI accents, and report density." in prompt
+    reason = prompts[0]["reference_reason"]
+    if has_references:
+        assert "cover_style" in reason
+        assert "product_ui" in reason
+        assert "仅使用元数据" in reason
+    else:
+        assert "仅来自 Brief 和风格规则" in reason
+
+
 def test_user_reference_still_adds_product_ui_reference_when_needed(tmp_path, monkeypatch):
     product_dir = tmp_path / "product"
     screenshots = product_dir / "screenshots"
@@ -63,8 +105,31 @@ def test_user_reference_still_adds_product_ui_reference_when_needed(tmp_path, mo
 
     assert refs[0]["source"] == "user"
     assert any(ref["role"] == "product_ui" for ref in refs)
+    assert all("仅使用元数据" in ref["reason"] for ref in refs)
 
     get_settings.cache_clear()
+
+
+def test_cover_library_selection_describes_metadata(tmp_path, monkeypatch):
+    style_dir = tmp_path / "备忘录聊天框风"
+    style_dir.mkdir()
+    (style_dir / "cover.png").write_bytes(b"fake")
+    monkeypatch.setenv("CATHOVEN_COVER_REFERENCE_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    try:
+        refs = image_rules.select_references(1, _brief(), {"tasks": ["封面图"]})
+        assert refs[0]["source"] == "cover_library"
+        assert "备忘录聊天框风" in refs[0]["reason"]
+        assert "仅使用元数据" in refs[0]["reason"]
+        assert "封面骨架" not in refs[0]["reason"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_image_qc_describes_prompt_constraint_checks():
+    qc = image_rules.image_qc([])
+    assert any("prompt 约束检查" in check for check in qc["checks"])
+    assert all("copy 结构" not in check for check in qc["checks"])
 
 
 def test_image_generation_uses_text_only_reference_contract(tmp_path, monkeypatch):

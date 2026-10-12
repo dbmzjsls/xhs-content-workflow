@@ -49,7 +49,7 @@ def select_references(
             "role": "cover_style",
             "path": str(brief["reference_path"]),
             "label": "user-reference",
-            "reason": "用户提供参考图，优先决定封面构图、标题承载和情绪。",
+            "reason": "选择用户提供的封面参考记录，仅使用元数据改写封面提示词。",
         })
     else:
         cover_dir = settings.cathoven_cover_reference_dir
@@ -62,7 +62,7 @@ def select_references(
                 "role": "cover_style",
                 "path": str(chosen),
                 "label": f"cover-library:{chosen.name}",
-                "reason": f"无用户参考图，按风格「{style}」从不同风格封面库选择封面骨架。",
+                "reason": f"无用户参考记录，按风格「{style}」从封面库选择记录，仅使用元数据改写封面提示词。",
             })
 
     if _needs_product_reference(image_task):
@@ -74,7 +74,7 @@ def select_references(
                 "role": "product_ui",
                 "path": str(product_ref),
                 "label": f"product-library:{product_ref.name}",
-                "reason": "当前图片需要产品可信度，补充 Cathoven 真实 UI 素材用于界面结构。",
+                "reason": "当前图片任务需要产品 UI，补充 Cathoven 产品库参考记录，仅使用元数据改写界面提示词。",
             })
     return refs
 
@@ -126,6 +126,7 @@ def generate_image_assets(run_id: int, prompts: list[dict[str, Any]]) -> list[di
 
 
 def image_qc(assets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check prompt constraints without inspecting generated images."""
     issues = []
     for asset in assets:
         prompt = asset["prompt"]
@@ -139,9 +140,10 @@ def image_qc(assets: list[dict[str, Any]]) -> dict[str, Any]:
         "passed": not issues,
         "issues": issues,
         "checks": [
+            "仅进行 prompt 约束检查",
             "先匹配图片任务",
             "封面优先点击理由",
-            "参考图只 copy 结构不 copy 内容",
+            "参考记录仅使用元数据，prompt 包含不复制内容的约束",
             "Cathoven UI 仅在需要产品时出现",
             "失败时保留 prompt 与 fallback 预览",
         ],
@@ -172,8 +174,10 @@ def _asset_title(task: str, draft: dict[str, Any]) -> str:
 
 
 def _reference_reason(task: str, references: list[dict[str, Any]]) -> str:
-    roles = ", ".join(ref["role"] for ref in references) or "fallback style guide"
-    return f"{task} 使用参考角色：{roles}。参考图只用于构图、信息密度、情绪和 UI 骨架。"
+    if not references:
+        return f"{task} 提示词仅来自 Brief 和风格规则。"
+    roles = ", ".join(ref["role"] for ref in references)
+    return f"{task} 使用参考记录角色：{roles}。仅使用元数据改写提示词，不提供图像内容。"
 
 
 def _prompt_for(
@@ -186,7 +190,7 @@ def _prompt_for(
     ref_text = "\n".join(
         f"- {ref['role']}: {_reference_label(ref)} ({ref['reason']})"
         for ref in references
-    ) or "- No file reference available; follow the encoded Cathoven XHS workflow."
+    ) or "- No reference metadata available; use only the Brief and style rules."
     if task == "封面图":
         return f"""Use case: ads-marketing
 Asset type: Xiaohongshu cover image
@@ -194,9 +198,9 @@ Asset type: Xiaohongshu cover image
 Primary request:
 Create a high-click-through cover for a Xiaohongshu post about {brief['topic']}.
 
-Reference image(s):
+Reference metadata (text only; image contents are not provided):
 {ref_text}
-Use the reference image for title layout, composition, color, emotion, and feed stopping power only.
+Create a title layout, composition, color palette, and emotion that draw attention in a mobile feed.
 Do not copy exact text, logos, usernames, faces, watermarks, or irrelevant brands.
 
 Visual concept:
@@ -220,9 +224,9 @@ Asset type: Cathoven UI copy for Xiaohongshu carousel
 Primary request:
 Create a Cathoven-style desktop web UI image about {brief['product_function']}.
 
-Reference image(s):
+Reference metadata (text only; image contents are not provided):
 {ref_text}
-Use the provided Cathoven screenshot as structural reference: layout, card hierarchy, purple UI accents, and report density.
+Create a desktop web layout with card hierarchy, purple UI accents, and report density.
 Do not copy exact text or small UI copy; recreate a plausible new UI state.
 
 Screen:
@@ -242,7 +246,7 @@ Asset type: Xiaohongshu tutorial step image
 Primary request:
 Create one tutorial step image showing "paste essay -> read one feedback -> revise one paragraph".
 
-Reference image(s):
+Reference metadata (text only; image contents are not provided):
 {ref_text}
 Do not copy exact text, screenshot copy, usernames, dates, or unrelated brand marks.
 
@@ -262,9 +266,9 @@ Asset type: social proof collage
 Primary request:
 Create a Xiaohongshu-style social proof image about {brief['pain_point']}.
 
-Reference image(s):
+Reference metadata (text only; image contents are not provided):
 {ref_text}
-Use the reference for collage structure, comment-card rhythm, and social screenshot feel.
+Create a collage with rhythmic comment cards and a social screenshot feel.
 Do not copy exact text, real usernames, avatars, comments, platform logos, or timestamps.
 
 Text:
@@ -278,7 +282,7 @@ Asset type: Xiaohongshu lifestyle/supporting image
 Primary request:
 Create a realistic image about {brief['topic']}.
 
-Reference image(s):
+Reference metadata (text only; image contents are not provided):
 {ref_text}
 Do not copy exact text, logos, usernames, dates, watermarks, or unrelated brands.
 
