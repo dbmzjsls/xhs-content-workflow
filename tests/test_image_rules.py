@@ -1,5 +1,6 @@
 import base64
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.config import get_settings
@@ -66,29 +67,93 @@ def test_user_reference_still_adds_product_ui_reference_when_needed(tmp_path, mo
     get_settings.cache_clear()
 
 
-def test_real_image_generation_requests_base64_response(tmp_path, monkeypatch):
-    captured = {}
+def test_image_generation_uses_text_only_reference_contract(tmp_path, monkeypatch):
+    captured = {"generate_calls": [], "edit_called": False}
 
     class FakeImages:
         def generate(self, **kwargs):
-            captured.update(kwargs)
+            captured["generate_calls"].append(kwargs)
             return SimpleNamespace(
                 data=[SimpleNamespace(b64_json=base64.b64encode(b"png-bytes").decode("ascii"))]
             )
 
+        def edit(self, **kwargs):
+            captured["edit_called"] = True
+            raise AssertionError("image references must not be sent through images.edit")
+
     class FakeOpenAI:
         def __init__(self, **kwargs):
-            captured.update(kwargs)
+            captured["client_kwargs"] = kwargs
             self.images = FakeImages()
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
     monkeypatch.setenv("IMAGE_API_KEY", "test-key")
+    monkeypatch.setenv("IMAGE_PROVIDER", "openai")
+    monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
     get_settings.cache_clear()
 
-    path = image_rules._try_generate_real_image("prompt", tmp_path, 1)
+    brief = _brief()
+    route = content_rules.route_style(brief)
+    draft = {"title": "睡前20分钟改作文", "body": "先看反馈", "tags": []}
+    tasks = {"tasks": ["封面图"]}
+    first_reference = tmp_path / "reference-a.png"
+    second_reference = tmp_path / "reference-b.png"
+    first_reference.write_bytes(b"first image bytes")
+    second_reference.write_bytes(b"different image bytes")
+    refs_a = [{
+        "role": "cover_style",
+        "path": str(first_reference),
+        "label": "same-label",
+        "reason": "same reason",
+    }]
+    refs_b = [{**refs_a[0], "path": str(second_reference)}]
 
-    assert path == tmp_path / "01-generated.png"
-    assert path.read_bytes() == b"png-bytes"
-    assert captured["response_format"] == "b64_json"
+    prompts_with_refs = image_rules.rewrite_image_prompts(brief, route, draft, tasks, refs_a)
+    prompts_with_different_bytes = image_rules.rewrite_image_prompts(
+        brief, route, draft, tasks, refs_b
+    )
+    assert first_reference.read_bytes() != second_reference.read_bytes()
+    assert prompts_with_refs[0]["prompt"] == prompts_with_different_bytes[0]["prompt"]
+
+    changed_role = [{**refs_a[0], "role": "product_ui"}]
+    changed_reason = [{**refs_a[0], "reason": "changed reason"}]
+    prompt_with_changed_role = image_rules.rewrite_image_prompts(
+        brief, route, draft, tasks, changed_role
+    )[0]["prompt"]
+    prompt_with_changed_reason = image_rules.rewrite_image_prompts(
+        brief, route, draft, tasks, changed_reason
+    )[0]["prompt"]
+    assert prompt_with_changed_role != prompts_with_refs[0]["prompt"]
+    assert prompt_with_changed_reason != prompts_with_refs[0]["prompt"]
+
+    prompts_without_refs = image_rules.rewrite_image_prompts(brief, route, draft, tasks, [])
+    assets = image_rules.generate_image_assets(7, prompts_with_refs + prompts_without_refs)
+    settings = get_settings()
+
+    assert len(captured["generate_calls"]) == 2
+    assert captured["edit_called"] is False
+    assert [call.keys() for call in captured["generate_calls"]] == [
+        {"model", "prompt", "response_format", "size"},
+        {"model", "prompt", "response_format", "size"},
+    ]
+    assert captured["generate_calls"] == [
+        {
+            "model": settings.image_model,
+            "prompt": prompts_with_refs[0]["prompt"],
+            "response_format": "b64_json",
+            "size": "1024x1536",
+        },
+        {
+            "model": settings.image_model,
+            "prompt": prompts_without_refs[0]["prompt"],
+            "response_format": "b64_json",
+            "size": "1024x1536",
+        },
+    ]
+    assert [asset["status"] for asset in assets] == ["generated", "generated"]
+    assert [Path(asset["file_path"]).read_bytes() for asset in assets] == [
+        b"png-bytes",
+        b"png-bytes",
+    ]
 
     get_settings.cache_clear()
