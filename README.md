@@ -47,6 +47,8 @@ Open `http://127.0.0.1:5174`. The UI calls `http://127.0.0.1:8090` by default. D
 
 Real-provider configuration is opt-in. Set `LLM_PROVIDER=openai` (or `openai-compatible`) and the compatible key/base URL/model only for an intentional local run. Image provider configuration is separate. The application never silently falls back from a failed real provider to mock output.
 
+Image references currently provide metadata only. Prompt rewriting deterministically assembles text from each reference's role, label, and selection reason; it does not understand the image, and no image bytes are sent to the image provider. An uploaded image is stored as a local asset record for reference metadata during generation. Generated results are not guaranteed to follow its composition, colors, or UI, and the original upload is not promised in the publication ZIP. With the mock image provider, the workflow writes an explicit placeholder preview and makes no paid-provider call. Existing audit records and export packages remain immutable historical snapshots; the current UI and newly written exports describe the text-only reference boundary without rewriting old data.
+
 ## Tests and regression evaluation
 
 ```powershell
