@@ -6,7 +6,9 @@ from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
@@ -25,11 +27,34 @@ from app.models import (
 from app.repositories import runs as repo
 from app.schemas import RunCreate
 from app.security import redact_internal_error
-from app.services import content_pipeline, execution_service, image_rules, state_service
+from app.services import content_pipeline, execution_service, image_rules, state_service, worker
 from app.services.worker import get_worker
 from app.time_utils import utc_now
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image"
+REFERENCE_USAGE = "参考信息驱动的 prompt 重写：仅使用素材角色、标签和选择理由；不分析或向生成模型发送图片内容。上传图片仅供素材留档，生成结果不会自动参考其构图、颜色或 UI。"
+HISTORICAL_NOTICE = "下方保留原始生成记录，历史记录可能包含旧版能力描述；图片内容未作为模型输入。"
+
+
+def _assert_reference_export_boundary(client, package):
+    markdown = client.get(package["markdown_url"]).text
+    package_json = client.get(package["json_url"]).text
+    archive = client.get(package["zip_url"]).content
+    with zipfile.ZipFile(BytesIO(archive)) as bundle:
+        zip_markdown = bundle.read("发布包.md").decode("utf-8")
+        zip_json = bundle.read("package.json").decode("utf-8")
+    assert zip_markdown == markdown
+    assert json.loads(zip_json) == json.loads(package_json)
+    for content in (markdown, zip_markdown):
+        assert "## 参考素材信息" in content
+        assert "## 参考图选择" not in content
+        assert REFERENCE_USAGE in content
+        assert HISTORICAL_NOTICE in content
+        reference_section = content.split("## 参考素材信息", 1)[1].split("## 图片方案", 1)[0]
+        assert reference_section.strip().startswith(f"{REFERENCE_USAGE}\n\n{HISTORICAL_NOTICE}")
+    for content in (package_json, zip_json):
+        assert json.loads(content)["reference_usage"] == REFERENCE_USAGE
+    return markdown, package_json, zip_markdown, zip_json
 
 
 def _prepare(tmp_path: Path, monkeypatch) -> TestClient:
@@ -78,6 +103,9 @@ def _idempotency(value: str) -> dict[str, str]:
 
 def test_full_mock_flow_has_two_gates_and_durable_steps(tmp_path, monkeypatch):
     client = _prepare(tmp_path, monkeypatch)
+    monkeypatch.setenv("CATHOVEN_COVER_REFERENCE_DIR", str(tmp_path / "no-covers"))
+    monkeypatch.setenv("CATHOVEN_PRODUCT_REFERENCE_DIR", str(tmp_path / "no-product"))
+    get_settings.cache_clear()
     created = _create(client)
     assert created["status"] == "queued"
     assert created["drafts"] == []
@@ -142,6 +170,8 @@ def test_full_mock_flow_has_two_gates_and_durable_steps(tmp_path, monkeypatch):
         "zip_url": f"/api/runs/{created['id']}/exports/zip",
     }
     assert client.get(detail["final_package"]["zip_url"]).status_code == 200
+    _assert_reference_export_boundary(client, detail["final_package"])
+    assert client.get(detail["final_package"]["json_url"]).json()["references"] == []
 
 
 def test_idempotency_replays_original_and_rejects_key_reuse(tmp_path, monkeypatch):
@@ -208,6 +238,60 @@ def test_cancel_during_provider_work_wins_over_worker_completion(tmp_path, monke
     detail = client.get(f"/api/runs/{run['id']}").json()
     assert detail["status"] == "canceled"
     assert detail["images"] == []
+
+
+@pytest.mark.parametrize("phase", ["text", "image"])
+@pytest.mark.parametrize("competing_action", ["cancel", "claim"])
+def test_stale_worker_claim_cannot_revive_or_duplicate_work(
+    tmp_path, monkeypatch, phase, competing_action
+):
+    client = _prepare(tmp_path, monkeypatch)
+    run_id = _create(client)["id"]
+    if phase == "image":
+        assert get_worker().run_once() is True
+        assert client.post(f"/api/runs/{run_id}/copy-approval").status_code == 200
+    before = client.get(f"/api/runs/{run_id}").json()
+    competing_claims = []
+    committed_states = []
+    executions = []
+    paused = False
+
+    class InterleavedSession(Session):
+        def exec(self, statement, *args, **kwargs):
+            nonlocal paused
+            result = super().exec(statement, *args, **kwargs)
+            if not paused and getattr(statement, "is_select", False):
+                # Consume the real queue read before another transaction commits.
+                # Return the original row so the first worker resumes with stale state.
+                row = result.first()
+                paused = True
+                assert row.id == run_id
+                if competing_action == "cancel":
+                    response = client.post(f"/api/runs/{run_id}/cancel")
+                    assert response.status_code == 200
+                else:
+                    competing_claims.append(worker.RunWorker()._claim_next())
+                committed_states.append(client.get(f"/api/runs/{run_id}").json())
+                return SimpleNamespace(first=lambda: row)
+            return result
+
+    monkeypatch.setattr(worker, "Session", InterleavedSession)
+    monkeypatch.setattr(worker, "run_text_phase", lambda *args: executions.append("text"))
+    monkeypatch.setattr(worker, "run_image_phase", lambda *args: executions.append("image"))
+    assert worker.RunWorker().run_once() is False
+    assert paused
+    assert executions == []
+    after = client.get(f"/api/runs/{run_id}").json()
+    assert after == committed_states[0]
+    if competing_action == "cancel":
+        assert after["status"] == after["current_step"] == "canceled"
+        assert client.post(f"/api/runs/{run_id}/retry").status_code == 409
+    else:
+        assert competing_claims == [(run_id, phase)]
+        assert after["status"] == ("running" if phase == "text" else "image_running")
+    assert after["steps"] == before["steps"]
+    assert after["drafts"] == before["drafts"]
+    assert after["images"] == []
 
 
 def test_failure_retry_resumes_failed_phase_without_repeating_text(tmp_path, monkeypatch):
@@ -808,20 +892,20 @@ def test_upload_backed_flow_never_exposes_filesystem_paths(tmp_path, monkeypatch
     ).json()
     run = _create(client, upload_asset_ids=[uploaded["id"]])
     get_worker().run_once()
+    assert client.get(f"/api/runs/{run['id']}").json()["status"] == "copy_review_required"
     client.post(f"/api/runs/{run['id']}/copy-approval")
     get_worker().run_once()
     detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "asset_review_required"
     public_run = json.dumps(detail, ensure_ascii=False)
     assert f"upload:{uploaded['id']}" in public_run
     assert f"/api/runs/{run['id']}/assets/" in public_run
 
     approved = client.post(f"/api/runs/{run['id']}/asset-approval").json()
-    markdown = client.get(approved["final_package"]["markdown_url"]).text
-    package_json = client.get(approved["final_package"]["json_url"]).text
-    archive = client.get(approved["final_package"]["zip_url"]).content
-    with zipfile.ZipFile(BytesIO(archive)) as bundle:
-        zip_markdown = bundle.read("发布包.md").decode("utf-8")
-        zip_json = bundle.read("package.json").decode("utf-8")
+    assert approved["status"] == "completed"
+    markdown, package_json, zip_markdown, zip_json = _assert_reference_export_boundary(
+        client, approved["final_package"]
+    )
 
     with Session(get_engine()) as session:
         stored_upload = session.get(UploadAsset, uploaded["id"])
@@ -836,6 +920,130 @@ def test_upload_backed_flow_never_exposes_filesystem_paths(tmp_path, monkeypatch
         assert all(path not in public_content for path in forbidden)
     assert f"upload:{uploaded['id']}" in markdown
     assert f"/api/runs/{run['id']}/assets/" in package_json
+
+
+@pytest.mark.parametrize("resume", ["api_retry", "worker_recovery"])
+def test_historical_reference_audit_survives_resume_and_new_export(
+    tmp_path, monkeypatch, resume
+):
+    client = _prepare(tmp_path, monkeypatch)
+    uploaded = client.post(
+        "/api/uploads", files={"file": ("reference.png", PNG, "image/png")}
+    ).json()
+    run = _create(client, upload_asset_ids=[uploaded["id"]])
+    get_worker().run_once()
+    historical_reason = "旧版记录：参考上传图片的构图、颜色和 UI。"
+    historical_prompt = "旧版 Prompt：Use the uploaded reference image composition. Do not copy exact text; thumbnail-readable."
+    prompt_items = [{
+        "kind": "封面图", "title": "Historical cover",
+        "reference_reason": historical_reason, "prompt": historical_prompt,
+    }]
+    with Session(get_engine()) as session:
+        upload = session.get(UploadAsset, uploaded["id"])
+        references = [{
+            "source": f"user_upload:{uploaded['id']}", "role": "cover_style",
+            "path": upload.file_path, "label": f"upload:{uploaded['id']}",
+            "reason": historical_reason,
+        }]
+        repo.record_step(session, run["id"], "reference_select", {}, {"items": references})
+        repo.record_step(session, run["id"], "prompt_rewrite", {}, {"items": prompt_items})
+        repo.add_reference(
+            session, run["id"], source=references[0]["source"], role="cover_style",
+            path=upload.file_path, reason=historical_reason,
+        )
+        audit_before = {
+            step.id: step.output_payload
+            for step in repo.list_steps(session, run["id"])
+            if step.name in {"reference_select", "prompt_rewrite"}
+        }
+
+    def unexpected_rewrite(*args, **kwargs):
+        pytest.fail("completed historical reference/prompt output must be reused")
+
+    monkeypatch.setattr(image_rules, "select_references", unexpected_rewrite)
+    monkeypatch.setattr(image_rules, "rewrite_image_prompts", unexpected_rewrite)
+    monkeypatch.setenv("IMAGE_PROVIDER", "openai-compatible")
+    get_settings.cache_clear()
+    provider_calls = []
+
+    def paid_provider(prompt, out_dir, index):
+        provider_calls.append(prompt)
+        if resume == "api_retry" and len(provider_calls) == 1:
+            raise RuntimeError("pre-generation provider failure")
+        path = out_dir / f"{index:02d}-historical.png"
+        path.write_bytes(PNG)
+        return path
+
+    monkeypatch.setattr(image_rules, "_generate_real_image", paid_provider)
+    original_qc = image_rules.image_qc
+    if resume == "worker_recovery":
+        monkeypatch.setattr(image_rules, "image_qc", lambda assets: {
+            "passed": False, "issues": ["interrupted after paid generation"],
+        })
+    assert client.post(f"/api/runs/{run['id']}/copy-approval").status_code == 200
+    assert get_worker().run_once() is True
+    assert client.get(f"/api/runs/{run['id']}").json()["status"] == "failed"
+
+    if resume == "api_retry":
+        assert client.post(f"/api/runs/{run['id']}/retry").json()["status"] == "image_queued"
+    else:
+        with Session(get_engine()) as session:
+            completed_generation = next(
+                step for step in repo.list_steps(session, run["id"])
+                if step.name == "image_generate"
+            )
+            generated_audit = (completed_generation.id, completed_generation.output_payload)
+            stored_run = session.get(ContentRun, run["id"])
+            stored_run.status = "image_running"
+            stored_run.heartbeat_at = utc_now() - timedelta(hours=1)
+            session.add(stored_run)
+            session.commit()
+        assert get_worker().recover_stale() == 1
+        monkeypatch.setattr(image_rules, "image_qc", original_qc)
+
+    assert get_worker().run_once() is True
+    detail = client.get(f"/api/runs/{run['id']}").json()
+    assert detail["status"] == "asset_review_required"
+    assert len(provider_calls) == (2 if resume == "api_retry" else 1)
+    assert all(prompt == historical_prompt for prompt in provider_calls)
+    assert detail["images"][0]["status"] == "generated"
+    assert detail["images"][0]["prompt"] == historical_prompt
+    assert detail["images"][0]["reference_reason"] == historical_reason
+    approved = client.post(f"/api/runs/{run['id']}/asset-approval").json()
+    assert approved["status"] == "completed"
+    markdown, package_json, zip_markdown, zip_json = _assert_reference_export_boundary(
+        client, approved["final_package"]
+    )
+    for content in (markdown, zip_markdown):
+        assert historical_reason in content
+        assert historical_prompt in content
+    for content in (package_json, zip_json):
+        assert json.loads(content)["references"][0]["reason"] == historical_reason
+    for content in (json.dumps(detail, ensure_ascii=False), markdown, package_json, zip_markdown, zip_json):
+        assert str(tmp_path) not in content
+        assert str(tmp_path).replace("\\", "\\\\") not in content
+        assert tmp_path.as_posix() not in content
+    with Session(get_engine()) as session:
+        assert {
+            step.id: step.output_payload
+            for step in repo.list_steps(session, run["id"])
+            if step.name in {"reference_select", "prompt_rewrite"}
+        } == audit_before
+        image = repo.list_images(session, run["id"])[0]
+        assert (image.prompt, image.reference_reason) == (historical_prompt, historical_reason)
+        assert repo.list_references(session, run["id"])[0].reason == historical_reason
+        if resume == "worker_recovery":
+            generation_steps = [
+                step for step in repo.list_steps(session, run["id"])
+                if step.name == "image_generate"
+            ]
+            assert [(step.id, step.output_payload) for step in generation_steps] == [generated_audit]
+    # Serving existing packages remains a read-only operation, even if wording changes later.
+    original_archive = client.get(approved["final_package"]["zip_url"]).content
+    monkeypatch.setattr("app.services.export_service.REFERENCE_USAGE", "later wording")
+    assert client.get(approved["final_package"]["markdown_url"]).text == markdown
+    assert client.get(approved["final_package"]["json_url"]).text == package_json
+    assert client.get(approved["final_package"]["zip_url"]).content == original_archive
 
 
 def test_revision_provider_failure_is_durable_atomic_and_retryable(tmp_path, monkeypatch):

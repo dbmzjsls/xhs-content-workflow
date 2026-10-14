@@ -16,6 +16,9 @@ from app.security import (
     sanitize_public_payload,
 )
 
+REFERENCE_USAGE = "参考信息驱动的 prompt 重写：仅使用素材角色、标签和选择理由；不分析或向生成模型发送图片内容。上传图片仅供素材留档，生成结果不会自动参考其构图、颜色或 UI。"
+HISTORICAL_REFERENCE_NOTICE = "下方保留原始生成记录，历史记录可能包含旧版能力描述；图片内容未作为模型输入。"
+
 
 class AssetPackageValidationError(ValueError):
     pass
@@ -46,6 +49,7 @@ def export_package(session: Session, run_id: int, *, commit: bool = True) -> dic
     payload = {
         "run_id": run_id,
         "topic": run.topic,
+        "reference_usage": REFERENCE_USAGE,
         "draft": draft.model_dump(mode="json"),
         "images": [
             {
@@ -151,7 +155,11 @@ def _render_markdown(run, draft, images, references) -> str:
 {json.dumps(sanitize_public_payload(draft.quality_report), ensure_ascii=False, indent=2)}
 ```
 
-## 参考图选择
+## 参考素材信息
+
+{REFERENCE_USAGE}
+
+{HISTORICAL_REFERENCE_NOTICE}
 
 {reference_lines}
 

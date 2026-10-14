@@ -26,6 +26,8 @@ At `copy_review_required`, the operator can compare all three candidates, select
 
 Copy approval queues image work. The worker classifies image tasks, selects owned/library references, rewrites prompts, generates assets, and records image quality checks. Filesystem paths stay internal; the API exposes owned resource URLs.
 
+Reference-based prompt rewriting is deterministic template assembly from reference role, label, and selection reason. It does not inspect image contents, and no image bytes are sent to the image provider. An uploaded image is retained as a local asset record and contributes metadata only during generation; it does not make the result follow the upload's composition, colors, or UI. The original upload is not promised as part of the publication ZIP. The mock image provider creates an explicit placeholder preview without calling a paid provider. Existing audit records and written export packages are immutable historical snapshots; the current UI and new exports state this capability boundary without rewriting old data.
+
 At `asset_review_required`, the operator inspects the generated assets and quality data. Approval creates an atomic Markdown/JSON/ZIP publication package. It does not publish externally.
 
 ## 5. Audit and reproducibility
