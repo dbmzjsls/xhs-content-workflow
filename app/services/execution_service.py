@@ -106,7 +106,7 @@ def run_image_phase(session: Session, run_id: int) -> None:
                         "path": upload.file_path,
                         "asset_id": upload.id,
                         "label": f"upload:{upload.id}",
-                        "reason": "User-controlled uploaded reference image.",
+                        "reason": "User-controlled uploaded reference record; only metadata is used to rewrite the prompt, and image contents are not provided.",
                     }
                 )
             repo.record_step(

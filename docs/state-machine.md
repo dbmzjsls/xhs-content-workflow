@@ -29,6 +29,7 @@ The public run states are fixed. The local worker is the only automatic transiti
 - Mutation idempotency records commit with the business action.
 - Provider failures are durable and retain internal diagnostics while public errors redact filesystem paths.
 - Cancel wins over late provider completion; canceled work cannot publish candidates or image rows.
+- Queue claims conditionally update the original queued state in the database. A cancellation or competing claim committed between the queue read and the conditional update prevents the stale worker from starting that phase or changing the run's timestamps.
 - Startup recovery interrupts stale running attempts, records them as failed attempts, and requeues only the affected phase.
 - Retry reuses completed durable phase output rather than repeating successful work.
 
