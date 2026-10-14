@@ -18,6 +18,8 @@ for (const withUpload of [true, false]) {
     await page.goto('/')
     await expect(page.locator('.file-field')).toContainText('参考素材留档（可选）')
     await expect(page.locator('.file-field').getByText(REFERENCE_USAGE, { exact: true })).toBeVisible()
+    await expect(page.locator('label[for="brief-upload"]')).not.toContainText(REFERENCE_USAGE)
+    await expect(page.getByTestId('brief-upload')).toHaveAttribute('aria-describedby', 'brief-upload-help')
     await page.getByTestId('brief-topic').fill('Playwright commuting writing check')
     await page.getByTestId('brief-audience').fill('IELTS self-study commuters')
     await page.getByTestId('brief-product').fill('Writing Checker')
