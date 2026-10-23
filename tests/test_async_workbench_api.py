@@ -146,6 +146,15 @@ def test_full_mock_flow_has_two_gates_and_durable_steps(tmp_path, monkeypatch):
     assert assets_ready["status"] == "asset_review_required"
     assert assets_ready["current_step"] == "asset_review"
     assert assets_ready["images"]
+    assert any(
+        step["name"] == "prompt_contract_check" for step in assets_ready["steps"]
+    )
+    assert all(step["name"] != "image_qc" for step in assets_ready["steps"])
+    assert all(
+        image["qc_report"]["scope"] == "prompt_only"
+        and image["qc_report"]["image_quality_gate"] == "manual_asset_review"
+        for image in assets_ready["images"]
+    )
     assert all("file_path" not in item and item["url"] for item in assets_ready["images"])
     asset = client.get(assets_ready["images"][0]["url"])
     assert asset.status_code == 200
@@ -975,9 +984,9 @@ def test_historical_reference_audit_survives_resume_and_new_export(
         return path
 
     monkeypatch.setattr(image_rules, "_generate_real_image", paid_provider)
-    original_qc = image_rules.image_qc
+    original_check = image_rules.prompt_contract_check
     if resume == "worker_recovery":
-        monkeypatch.setattr(image_rules, "image_qc", lambda assets: {
+        monkeypatch.setattr(image_rules, "prompt_contract_check", lambda assets: {
             "passed": False, "issues": ["interrupted after paid generation"],
         })
     assert client.post(f"/api/runs/{run['id']}/copy-approval").status_code == 200
@@ -999,7 +1008,7 @@ def test_historical_reference_audit_survives_resume_and_new_export(
             session.add(stored_run)
             session.commit()
         assert get_worker().recover_stale() == 1
-        monkeypatch.setattr(image_rules, "image_qc", original_qc)
+        monkeypatch.setattr(image_rules, "prompt_contract_check", original_check)
 
     assert get_worker().run_once() is True
     detail = client.get(f"/api/runs/{run['id']}").json()

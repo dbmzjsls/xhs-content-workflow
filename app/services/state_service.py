@@ -221,7 +221,9 @@ def retry(session: Session, run_id: int, *, commit: bool = True) -> dict[str, An
             update(RunStep)
             .where(
                 RunStep.run_id == run_id,
-                RunStep.name.in_({"image_generate", "image_qc"}),
+                RunStep.name.in_(
+                    {"image_generate", "prompt_contract_check", "image_qc"}
+                ),
                 RunStep.status == "completed",
             )
             .values(

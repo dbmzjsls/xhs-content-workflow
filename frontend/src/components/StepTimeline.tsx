@@ -13,12 +13,14 @@ const expected = [
   'reference_select',
   'prompt_rewrite',
   'image_generate',
-  'image_qc',
+  'prompt_contract_check',
   'human_review',
 ]
 
 export function StepTimeline({ steps, currentStep }: { steps: Step[]; currentStep?: string }) {
-  const done = new Set(steps.map((step) => step.name))
+  const done = new Set(
+    steps.map((step) => step.name === 'image_qc' ? 'prompt_contract_check' : step.name),
+  )
 
   return (
     <section className="panel timeline-panel">

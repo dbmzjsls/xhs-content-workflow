@@ -15,5 +15,5 @@ class WorkflowState(TypedDict, total=False):
     references: list[dict[str, Any]]
     image_prompts: list[dict[str, Any]]
     image_assets: list[dict[str, Any]]
-    image_qc: dict[str, Any]
+    prompt_contract_check: dict[str, Any]
     awaiting_review: bool

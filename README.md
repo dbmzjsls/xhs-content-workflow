@@ -186,7 +186,7 @@ IMAGE_MODEL=gpt-image-1
 
 现有审计记录和发布包保持为不可变历史快照，新的边界说明不会回写旧数据。Mock 图片 Provider 只生成明确标记的占位预览，不进行付费调用。
 
-代码中的 `image_qc` 是 **Prompt contract check**：它检查 Prompt 是否包含桌面端、禁止复制原文、封面缩略图可读性等约束，并不检查生成图片本身。真实图片质量由人工素材审核门禁负责。
+代码中的 `prompt_contract_check` 检查 Prompt 是否包含桌面端、禁止复制原文、封面缩略图可读性等约束，并不检查生成图片本身。真实图片质量由 `asset_review_required` 人工素材审核门禁负责；后续可另行增加 OCR、尺寸和文件有效性等自动图片检查。
 
 ## 测试
 

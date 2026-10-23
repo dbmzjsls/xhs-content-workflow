@@ -92,8 +92,8 @@ def _image_generate(session: Session, state: WorkflowState) -> WorkflowState:
     return {"image_assets": out}
 
 
-def _image_qc(session: Session, state: WorkflowState) -> WorkflowState:
-    qc = image_rules.image_qc(state["image_assets"])
+def _prompt_contract_check(session: Session, state: WorkflowState) -> WorkflowState:
+    contract_report = image_rules.prompt_contract_check(state["image_assets"])
     for asset in state["image_assets"]:
         repo.add_image_asset(
             session,
@@ -104,10 +104,16 @@ def _image_qc(session: Session, state: WorkflowState) -> WorkflowState:
             prompt=asset["prompt"],
             reference_reason=asset["reference_reason"],
             file_path=asset.get("file_path"),
-            qc_report=qc,
+            qc_report=contract_report,
         )
-    repo.record_step(session, state["run_id"], "image_qc", {"items": state["image_assets"]}, qc)
-    return {"image_qc": qc}
+    repo.record_step(
+        session,
+        state["run_id"],
+        "prompt_contract_check",
+        {"items": state["image_assets"]},
+        contract_report,
+    )
+    return {"prompt_contract_check": contract_report}
 
 
 def _human_review(session: Session, state: WorkflowState) -> WorkflowState:
@@ -131,6 +137,6 @@ WORKFLOW_STEPS = (
     _reference_select,
     _prompt_rewrite,
     _image_generate,
-    _image_qc,
+    _prompt_contract_check,
     _human_review,
 )

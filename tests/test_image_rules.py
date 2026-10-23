@@ -126,10 +126,12 @@ def test_cover_library_selection_describes_metadata(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
-def test_image_qc_describes_prompt_constraint_checks():
-    qc = image_rules.image_qc([])
-    assert any("prompt 约束检查" in check for check in qc["checks"])
-    assert all("copy 结构" not in check for check in qc["checks"])
+def test_prompt_contract_check_describes_scope_and_manual_image_gate():
+    report = image_rules.prompt_contract_check([])
+    assert report["scope"] == "prompt_only"
+    assert report["image_quality_gate"] == "manual_asset_review"
+    assert any("prompt 约束检查" in check for check in report["checks"])
+    assert all("copy 结构" not in check for check in report["checks"])
 
 
 def test_image_generation_uses_text_only_reference_contract(tmp_path, monkeypatch):

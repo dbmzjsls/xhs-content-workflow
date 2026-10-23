@@ -125,7 +125,7 @@ def generate_image_assets(run_id: int, prompts: list[dict[str, Any]]) -> list[di
     return assets
 
 
-def image_qc(assets: list[dict[str, Any]]) -> dict[str, Any]:
+def prompt_contract_check(assets: list[dict[str, Any]]) -> dict[str, Any]:
     """Check prompt constraints without inspecting generated images."""
     issues = []
     for asset in assets:
@@ -139,6 +139,8 @@ def image_qc(assets: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "passed": not issues,
         "issues": issues,
+        "scope": "prompt_only",
+        "image_quality_gate": "manual_asset_review",
         "checks": [
             "仅进行 prompt 约束检查",
             "先匹配图片任务",

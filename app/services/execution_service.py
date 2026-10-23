@@ -148,14 +148,23 @@ def run_image_phase(session: Session, run_id: int) -> None:
         else:
             generated = list(generated_output.get("items", []))
 
-        if _completed_output(session, run_id, "image_qc") is None:
-            qc = image_rules.image_qc(generated)
-            if not qc["passed"]:
-                raise RuntimeError("image quality checks failed: " + "; ".join(qc["issues"]))
+        completed_contract_report = _completed_output(
+            session, run_id, "prompt_contract_check"
+        )
+        if completed_contract_report is None:
+            # Preserve immutable audit history created before this step was renamed.
+            completed_contract_report = _completed_output(session, run_id, "image_qc")
+        if completed_contract_report is None:
+            contract_report = image_rules.prompt_contract_check(generated)
+            if not contract_report["passed"]:
+                raise RuntimeError(
+                    "prompt contract check failed: "
+                    + "; ".join(contract_report["issues"])
+                )
         else:
-            qc = _completed_output(session, run_id, "image_qc") or {}
+            contract_report = completed_contract_report
         _publish_images_atomically(
-            session, run_id, phase_step.id, draft_id, generated, qc
+            session, run_id, phase_step.id, draft_id, generated, contract_report
         )
     except ExecutionCanceled:
         session.rollback()
@@ -305,7 +314,7 @@ def _publish_images_atomically(
     phase_step_id: int,
     draft_id: int,
     generated: list[dict[str, Any]],
-    qc: dict[str, Any],
+    contract_report: dict[str, Any],
 ) -> None:
     hook = globals().get("_before_image_publish")
     if hook is not None:
@@ -333,11 +342,16 @@ def _publish_images_atomically(
             prompt=asset["prompt"],
             reference_reason=asset["reference_reason"],
             file_path=asset["file_path"],
-            qc_report=qc,
+            qc_report=contract_report,
             commit=False,
         )
     repo.record_step(
-        session, run_id, "image_qc", {"items": generated}, qc, commit=False
+        session,
+        run_id,
+        "prompt_contract_check",
+        {"items": generated},
+        contract_report,
+        commit=False,
     )
     repo.finish_step(
         session,
