@@ -1,22 +1,28 @@
-import { Check, Download, RotateCcw, Send, SquareX, TimerReset } from 'lucide-react'
-import { useState } from 'react'
+import { Check, Download, RotateCcw, Send, SquareX } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { api, type Run } from '../lib/api'
+import { activeStates } from './StepTimeline'
 
-type Props = { run?: Run; busy: boolean; reviewActionsEnabled: boolean; onRevise: (instructions: string) => Promise<void>; onApproveCopy: () => Promise<void>; onApproveAssets: () => Promise<void>; onRetry: () => Promise<void>; onCancel: () => Promise<void> }
-const active = new Set(['queued', 'running', 'image_queued', 'image_running'])
-
-export function ReviewBar({ run, busy, reviewActionsEnabled, onRevise, onApproveCopy, onApproveAssets, onRetry, onCancel }: Props) {
-  const [instructions, setInstructions] = useState('把语气再自然一点，减少产品感。')
+export function ReviewBar({ run, busy, reviewActionsEnabled, selectedLabel, onAction }: {
+  run: Run
+  busy: boolean
+  reviewActionsEnabled: boolean
+  selectedLabel?: string
+  onAction: (action: (id: number) => Promise<unknown>) => Promise<void>
+}) {
+  const [instructions, setInstructions] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string>()
-  if (!run) return null
+  const downloadPending = useRef(false)
   const copyReview = run.status === 'copy_review_required'
   const assetReview = run.status === 'asset_review_required'
   const completed = run.status === 'completed'
-  const runId = run.id
   const downloadUrl = run.final_package?.zip_url
+  const cleanInstructions = instructions.trim()
+
   async function downloadExport() {
-    if (!downloadUrl || downloading) return
+    if (!downloadUrl || downloadPending.current) return
+    downloadPending.current = true
     setDownloading(true)
     setDownloadError(undefined)
     try {
@@ -24,20 +30,53 @@ export function ReviewBar({ run, busy, reviewActionsEnabled, onRevise, onApprove
       const objectUrl = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = objectUrl
-      anchor.download = filename ?? `run-${runId}.zip`
+      anchor.download = filename ?? `run-${run.id}.zip`
       anchor.click()
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
     } catch (error) {
-      setDownloadError(error instanceof Error ? error.message : '下载失败')
+      setDownloadError(error instanceof Error ? error.message : '请求失败，请重试。')
     } finally {
+      downloadPending.current = false
       setDownloading(false)
     }
   }
-  return <section className="review-bar"><div><b>{copyReview ? '文案审核' : assetReview ? '资产审核' : '运行状态'}</b><span>{downloadError || run.error || (completed ? '发布包已导出' : run.current_step)}</span></div>
-    {copyReview && <><input data-testid="revision-instructions" aria-label="修改指令" value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="输入具体修改指令" /><button data-testid="revise-draft" type="button" title={reviewActionsEnabled ? undefined : '请先选择当前可见文案'} onClick={() => void onRevise(instructions.trim())} disabled={busy || !instructions.trim() || !reviewActionsEnabled}><RotateCcw size={16} />返修</button><button data-testid="approve-copy" type="button" className="primary" title={reviewActionsEnabled ? undefined : '请先选择当前可见文案'} onClick={() => void onApproveCopy()} disabled={busy || !reviewActionsEnabled}><Send size={16} />通过文案</button></>}
-    {assetReview && <button data-testid="approve-assets" type="button" className="primary" onClick={() => void onApproveAssets()} disabled={busy}><Check size={16} />通过资产并导出</button>}
-    {run.status === 'failed' && <button data-testid="retry-run" type="button" onClick={() => void onRetry()} disabled={busy}><TimerReset size={16} />重试</button>}
-    {active.has(run.status) && <button type="button" className="danger" onClick={() => void onCancel()} disabled={busy}><SquareX size={16} />取消运行</button>}
-    <a data-testid="export-download" className={`download ${completed && !downloading ? '' : 'disabled'}`} href={downloadUrl ?? undefined} onClick={(event) => { event.preventDefault(); void downloadExport() }}><Download size={16} />{downloading ? '下载中…' : '下载发布包'}</a>
+
+  if (copyReview) return <section className="review-bar" aria-label="文案审核操作">
+    <div className="review-info">
+      <strong>{selectedLabel ? `审核对象 · ${selectedLabel}` : '尚未选中文案'}</strong>
+      <p>{reviewActionsEnabled ? '可直接通过，或填写修改意见后返修。' : '当前查看内容尚未选中。请先选择此方案。'}</p>
+    </div>
+    <label className="revision-field"><span>修改意见</span><textarea data-testid="revision-instructions" rows={1} maxLength={500} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="例如：语气更自然，减少产品感" /></label>
+    <div className="review-actions">
+      <button data-testid="revise-draft" type="button" onClick={() => {
+        if (reviewActionsEnabled && cleanInstructions) void onAction((id) => api.revise(id, cleanInstructions))
+      }} disabled={busy || !cleanInstructions || !reviewActionsEnabled}><RotateCcw size={16} />返修</button>
+      <button data-testid="approve-copy" type="button" className="primary" onClick={() => {
+        if (reviewActionsEnabled) void onAction(api.approveCopy)
+      }} disabled={busy || !reviewActionsEnabled}><Send size={16} />通过文案并生成图片</button>
+    </div>
   </section>
+
+  if (assetReview) return <section className="review-bar" aria-label="素材审核操作">
+    <div className="review-info"><strong>审核对象 · 整组素材</strong><p>共 {run.images.length} 项，通过后将导出发布包。</p></div>
+    <button data-testid="approve-assets" type="button" className="primary" onClick={() => void onAction(api.approveAssets)} disabled={busy}><Check size={17} />通过素材并导出</button>
+  </section>
+
+  if (completed) return <section className="review-bar" aria-label="发布包下载">
+    <div className="review-info"><strong>发布包</strong><p>{downloadUrl ? '已导出 Markdown、JSON 和图片素材。' : '该任务暂无可用的发布包下载地址。'}</p>
+      {downloadError && <p className="error" role="alert">下载失败。{downloadError}</p>}
+    </div>
+    <button data-testid="export-download" type="button" className="primary" disabled={!downloadUrl || downloading} onClick={() => void downloadExport()}><Download size={17} />{downloading ? '下载中…' : '下载发布包'}</button>
+  </section>
+
+  if (run.status === 'failed') return <section className="review-bar" aria-label="运行恢复">
+    <div className="review-info"><strong>恢复运行</strong><p>从失败阶段继续处理。</p></div>
+    <button data-testid="retry-run" type="button" className="primary" onClick={() => void onAction(api.retry)} disabled={busy}><RotateCcw size={17} />重试</button>
+  </section>
+
+  if (activeStates.has(run.status)) return <section className="review-bar" aria-label="运行操作">
+    <button type="button" className="danger" onClick={() => void onAction(api.cancel)} disabled={busy}><SquareX size={17} />取消运行</button>
+  </section>
+
+  return null
 }
