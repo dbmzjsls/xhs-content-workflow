@@ -1,77 +1,175 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Boxes, RefreshCw } from 'lucide-react'
-import { api, type Draft, type Run, type RunCreate, type RunSummary } from './lib/api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { History, Layers3, Plus } from 'lucide-react'
+import { api, type Run, type RunCreate, type RunSummary } from './lib/api'
 import { RunForm } from './components/RunForm'
-import { StepTimeline } from './components/StepTimeline'
-import { DraftPreview } from './components/DraftPreview'
-import { ImageAssets } from './components/ImageAssets'
-import { ReviewBar } from './components/ReviewBar'
+import { RunHistory } from './components/RunHistory'
+import { RunDetail } from './components/RunDetail'
+import { activeStates } from './components/StepTimeline'
 
-const initialBrief: RunCreate = { topic: '睡前 20 分钟改作文', audience: '雅思 5.5-6.5 自学考生', product_function: 'Writing Checker', pain_point: '作文改了很多遍，还是不知道卡在哪个评分维度', style_preference: '备忘录聊天框风' }
-const pollingStates = new Set(['queued', 'running', 'image_queued', 'image_running'])
-const imageVisibleStates = new Set(['image_queued', 'image_running', 'asset_review_required', 'completed'])
-const label: Record<string, string> = { queued: '排队中', running: '文案生成中', copy_review_required: '等待文案审核', image_queued: '图片排队中', image_running: '图片生成中', asset_review_required: '等待资产审核', completed: '已完成', failed: '失败', canceled: '已取消' }
+const initialBrief: RunCreate = {
+  topic: '', audience: '', product_function: '', pain_point: '', style_preference: '备忘录聊天框风',
+}
 
-function displayError(error: unknown) { return error instanceof Error ? error.message : String(error) }
-function imagePanelVisible(run: Run) { return imageVisibleStates.has(run.status) || (run.status === 'failed' && run.current_step === 'image_generation') }
+type View = { kind: 'create' | 'history' } | { kind: 'detail'; id: number; topic: string }
+
+function displayError(error: unknown) {
+  return error instanceof Error ? error.message : '请求失败，请重试。'
+}
 
 export function App() {
-  const [brief, setBrief] = useState<RunCreate>(initialBrief)
-  const [file, setFile] = useState<File | undefined>()
-  const [run, setRun] = useState<Run | undefined>()
-  const [history, setHistory] = useState<RunSummary[]>([])
-  const [visibleDraftId, setVisibleDraftId] = useState<number | undefined>()
+  const [view, setView] = useState<View>({ kind: 'create' })
+  const [brief, setBrief] = useState(initialBrief)
+  const [file, setFile] = useState<File>()
+  const [run, setRun] = useState<Run>()
+  const [history, setHistory] = useState<RunSummary[]>()
+  const [historyError, setHistoryError] = useState<string>()
+  const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | undefined>()
+  const [creating, setCreating] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const navigation = useRef(0)
+  const detailRequest = useRef(0)
+  const historyRequest = useRef(0)
+  const pending = useRef(false)
+  const heading = useRef<HTMLHeadingElement>(null)
 
-  const refreshHistory = useCallback(async () => setHistory((await api.listRuns()).items), [])
-  const refresh = useCallback(async (id: number) => {
-    const current = await api.getRun(id)
-    setRun(current)
-    await refreshHistory()
-    return current
-  }, [refreshHistory])
+  const refreshHistory = useCallback(async () => {
+    const request = ++historyRequest.current
+    setHistoryError(undefined)
+    try {
+      const { items } = await api.listRuns()
+      if (request === historyRequest.current) setHistory(items)
+    } catch (event) {
+      if (request === historyRequest.current) setHistoryError(displayError(event))
+    }
+  }, [])
 
-  useEffect(() => { void refreshHistory().catch((event) => setError(displayError(event))) }, [refreshHistory])
+  const refresh = useCallback(async (id: number, visit: number, afterAction = false) => {
+    const request = ++detailRequest.current
+    const isCurrent = () => visit === navigation.current && request === detailRequest.current
+    try {
+      const current = await api.getRun(id)
+      if (isCurrent()) {
+        setRun(current)
+        setError(undefined)
+      }
+    } catch (event) {
+      if (isCurrent()) {
+        if (afterAction) setRun(undefined)
+        setError(displayError(event))
+      }
+    }
+  }, [])
+
+  useEffect(() => { void refreshHistory() }, [refreshHistory])
+
+  const runId = run?.id
+  const polling = run != null && activeStates.has(run.status)
   useEffect(() => {
-    if (!run || !pollingStates.has(run.status)) return
-    const timer = window.setInterval(() => { void refresh(run.id).catch((event) => setError(displayError(event))) }, 1500)
-    return () => window.clearInterval(timer)
-  }, [run?.id, run?.status, refresh])
+    if (!polling || runId == null || busy || refreshing) return
+    const visit = navigation.current
+    let stopped = false
+    let timer: number
+    const tick = async () => {
+      if (stopped || visit !== navigation.current) return
+      if (!pending.current) {
+        await refresh(runId, visit)
+        if (!stopped && visit === navigation.current) void refreshHistory()
+      }
+      if (!stopped) timer = window.setTimeout(tick, 1500)
+    }
+    timer = window.setTimeout(tick, 1500)
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [runId, polling, busy, refreshing, refresh, refreshHistory])
 
-  const runAction = async (action: () => Promise<unknown>) => {
-    if (!run) return
-    setBusy(true); setError(undefined)
-    try { await action(); await refresh(run.id) } catch (event) { setError(displayError(event)); await refresh(run.id).catch(() => undefined) } finally { setBusy(false) }
+  function navigate(next: View, created?: Run) {
+    const visit = ++navigation.current
+    setRun(created)
+    setError(undefined)
+    setRefreshing(false)
+    setView(next)
+    if (next.kind === 'detail' && !created) void refresh(next.id, visit)
+    window.requestAnimationFrame(() => {
+      if (visit === navigation.current) heading.current?.focus()
+    })
   }
 
-  const submit = async () => {
-    setBusy(true); setError(undefined)
+  async function reloadDetail(id: number) {
+    if (pending.current || refreshing) return
+    const visit = navigation.current
+    setRefreshing(true)
+    setError(undefined)
+    await Promise.all([refresh(id, visit), refreshHistory()])
+    if (visit === navigation.current) setRefreshing(false)
+  }
+
+  async function submit() {
+    if (pending.current) return
+    pending.current = true
+    const visit = navigation.current
+    setCreating(true)
+    setBusy(true)
+    setError(undefined)
     try {
       const upload = file ? await api.upload(file) : undefined
       const created = await api.createRun({ ...brief, upload_asset_ids: upload ? [upload.id] : [] })
-      setRun(created); setFile(undefined); await refreshHistory()
-    } catch (event) { setError(displayError(event)) } finally { setBusy(false) }
+      setFile(undefined)
+      if (visit === navigation.current) navigate({ kind: 'detail', id: created.id, topic: created.topic }, created)
+      void refreshHistory()
+    } catch (event) {
+      if (visit === navigation.current) setError(displayError(event))
+    } finally {
+      pending.current = false
+      setCreating(false)
+      setBusy(false)
+    }
   }
 
-  const selected = useMemo(() => run?.drafts.find((draft) => draft.selected), [run])
-  useEffect(() => {
-    setVisibleDraftId(selected?.id ?? run?.drafts[0]?.id)
-  }, [run?.id, selected?.id])
-  const reviewActionsEnabled = visibleDraftId === selected?.id
-  const select = async (draft: Draft) => runAction(async () => { if (run) await api.selectDraft(run.id, draft.id) })
+  async function runAction(action: (id: number) => Promise<unknown>) {
+    if (!run || pending.current || refreshing) return
+    pending.current = true
+    ++detailRequest.current
+    const visit = navigation.current
+    setBusy(true)
+    setError(undefined)
+    try {
+      await action(run.id)
+      if (visit === navigation.current) await refresh(run.id, visit, true)
+    } catch (event) {
+      if (visit === navigation.current) {
+        await refresh(run.id, visit, true)
+        if (visit === navigation.current) setError(displayError(event))
+      }
+    } finally {
+      pending.current = false
+      setBusy(false)
+      void refreshHistory()
+    }
+  }
 
-  return <main>
-    <header className="topbar"><div className="brand-mark"><Boxes size={24} /></div><div><h1>小红书内容工作流</h1><p>把文案、图片与审核拆成可追溯的交付节点</p></div>{run && <button className="ghost" type="button" onClick={() => void refresh(run.id)}><RefreshCw size={16} />刷新</button>}</header>
-    {error && <div className="error" role="alert"><AlertTriangle size={17} /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>关闭</button></div>}
-    <div className="workspace">
-      <RunForm value={brief} file={file} busy={busy} onChange={setBrief} onFileChange={setFile} onSubmit={() => void submit()} />
-      <section className="panel history-panel"><div className="panel-title"><RefreshCw size={18} /><span>运行历史</span></div>{history.length === 0 ? <div className="empty-line">暂无历史运行</div> : <ul>{history.map((item) => <li key={item.id}><button type="button" className={run?.id === item.id ? 'active' : ''} onClick={() => { setError(undefined); void refresh(item.id).catch((event) => setError(displayError(event))) }}><b>#{item.id} {item.topic}</b><span className={`run-status ${item.status}`}>{label[item.status] ?? item.status}</span><small>{new Date(item.updated_at).toLocaleString()}</small></button></li>)}</ul>}</section>
-      <StepTimeline steps={run?.steps ?? []} currentStep={run?.current_step} />
-      <DraftPreview drafts={run?.drafts ?? []} steps={run?.steps ?? []} canSelect={run?.status === 'copy_review_required'} activeId={visibleDraftId} onActiveChange={setVisibleDraftId} onSelect={select} />
-      {run && imagePanelVisible(run) && <ImageAssets images={run.images} />}
-    </div>
-    {selected && run?.status === 'copy_review_required' && <p className="selection-note">当前选择：方案 {selected.candidate}。可提交修改意见，或通过文案进入图片生成。</p>}
-    <ReviewBar run={run} busy={busy} reviewActionsEnabled={reviewActionsEnabled} onRevise={(instructions) => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.revise(run.id, instructions) })} onApproveCopy={() => runAction(async () => { if (run && visibleDraftId === selected?.id) await api.approveCopy(run.id) })} onApproveAssets={() => runAction(async () => { if (run) await api.approveAssets(run.id) })} onRetry={() => runAction(async () => { if (run) await api.retry(run.id) })} onCancel={() => runAction(async () => { if (run) await api.cancel(run.id) })} />
-  </main>
+  const detail = view.kind === 'detail' ? view : undefined
+
+  return <>
+    <header className="topbar">
+      <div className="topbar-inner">
+        <div className="brand"><span className="brand-mark"><Layers3 size={20} aria-hidden="true" /></span><h1>小红书内容工作台</h1></div>
+        <button className={view.kind === 'create' ? '' : 'primary'} type="button" disabled={creating} onClick={() => navigate({ kind: 'create' })}><Plus size={18} />新建内容</button>
+      </div>
+    </header>
+    <main className={`workspace view-${view.kind}`}>
+      <RunHistory headingRef={view.kind === 'history' ? heading : undefined} items={history} error={historyError} selectedId={detail?.id} onRetry={() => void refreshHistory()} onSelect={(item) => navigate({ kind: 'detail', id: item.id, topic: item.topic })} />
+      <div className="work-area" hidden={view.kind === 'history'}>
+        <button className="history-back" type="button" onClick={() => navigate({ kind: 'history' })}><History size={17} />{detail ? '返回运行历史' : '查看运行历史'}</button>
+        <div hidden={view.kind !== 'create'}>
+          <RunForm headingRef={view.kind === 'create' ? heading : undefined} value={brief} file={file} busy={busy} creating={creating} error={view.kind === 'create' ? error : undefined} onChange={setBrief} onFileChange={setFile} onSubmit={() => void submit()} />
+        </div>
+        {detail && (run ? <RunDetail key={run.id} headingRef={heading} run={run} busy={busy || refreshing} refreshing={refreshing} error={error} onRefresh={() => void reloadDetail(run.id)} onAction={runAction} /> :
+          <section className="detail-shell detail-loading">
+            <p className="run-number">任务 #{detail.id}</p>
+            <h2 ref={heading} tabIndex={-1}>{detail.topic}</h2>
+            {error ? <><p className="error" role="alert">任务加载失败。{error}</p><button type="button" onClick={() => void reloadDetail(detail.id)}>重新加载任务</button></> : <p role="status">正在加载任务…</p>}
+          </section>)}
+      </div>
+    </main>
+  </>
 }

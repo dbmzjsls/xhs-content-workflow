@@ -17,6 +17,8 @@
 
 ## 项目截图
 
+桌面左侧展示最近 50 条运行，右侧随任务阶段切换到文案审核、素材审核和发布包下载。窄屏可用「返回运行历史」在列表与详情之间切换。未提交的 Brief 在当前页面会话中保留。
+
 | 创建结构化 Brief | 对比三个文案候选 |
 | --- | --- |
 | ![创建结构化 Brief](docs/images/brief-create.png) | ![对比三个文案候选](docs/images/candidate-comparison.png) |
@@ -25,7 +27,7 @@
 
 ![人工选择和返修文案](docs/images/copy-review-revision.png)
 
-**审核 Mock 素材与 Prompt contract check**
+**审核 Mock 素材并查看提示词约束检查**
 
 ![审核图片素材](docs/images/asset-review.png)
 
